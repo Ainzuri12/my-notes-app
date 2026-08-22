@@ -259,6 +259,7 @@
   .canvas-wrap[data-bg="cream"]{ background-color:#f5efe0; background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(0,0,0,0.08) 28px); }
   #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:1; }
   .canvas-shell, .canvas-scroll, .canvas-wrap{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .page-seam{ position:absolute; left:0; right:0; height:1px; background: rgba(128,128,128,0.22); pointer-events:none; }
   .page-seam::after{ content:''; position:absolute; top:1px; left:0; right:0; height:10px; background: linear-gradient(to bottom, rgba(0,0,0,0.12), transparent); }
@@ -860,6 +861,7 @@
         <div class="canvas-scroll" id="canvasScroll">
           <div class="canvas-wrap" data-bg="${bg}" id="canvasWrapEl">
             <canvas id="drawCanvas"></canvas>
+            <canvas id="drawCanvasPredictive"></canvas>
             <div class="eraser-cursor" id="eraserCursor"></div>
           </div>
         </div>
@@ -907,6 +909,7 @@
   function setupCanvas(note){
     const canvas = document.getElementById('drawCanvas');
     if(!canvas) return;
+    const predCanvas = document.getElementById('drawCanvasPredictive');
     const wrap = document.getElementById('canvasWrapEl');
     const scrollEl = document.getElementById('canvasScroll');
     const ratio = window.devicePixelRatio || 1;
@@ -924,6 +927,14 @@
         img.onload = () => ctx2.drawImage(img, 0, 0, cssW, preserveOldCssH || newCssH);
         img.src = note.drawing;
       }
+      // Keep the predictive overlay canvas pixel-for-pixel aligned with the
+      // main canvas so a predicted stroke lines up exactly with the real one.
+      if(predCanvas){
+        predCanvas.width = cssW * ratio; predCanvas.height = newCssH * ratio;
+        predCanvas.style.height = newCssH + 'px';
+        const pctx = predCanvas.getContext('2d');
+        pctx.scale(ratio, ratio); pctx.lineCap = 'round'; pctx.lineJoin = 'round';
+      }
       cssH = newCssH;
       note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
@@ -931,6 +942,12 @@
     }
 
     let ctx = sizeCanvasTo(cssH, cssH);
+    const predCtx = predCanvas ? predCanvas.getContext('2d') : null;
+    function clearPredictive(){
+      if(!predCtx) return;
+      predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
+    }
+
     let growing = false;
     function growIfNear(edgeY){
       if(growing) return;
@@ -945,6 +962,7 @@
 
     let drawing = false, lastX = 0, lastY = 0;
     let p1x = 0, p1y = 0, p2x = 0, p2y = 0; // rolling point buffer for curve smoothing
+    let smoothX = 0, smoothY = 0; // running exponential-average position, tames finger jitter
     function pos(e){ const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
     const eraserCursor = document.getElementById('eraserCursor');
@@ -979,6 +997,7 @@
 
     canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      clearPredictive();
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       const isTouch = e.pointerType === 'touch';
@@ -1002,6 +1021,7 @@
       try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       [lastX, lastY] = pos(e);
       p1x = p2x = lastX; p1y = p2y = lastY;
+      smoothX = lastX; smoothY = lastY;
       moveEraserCursor(lastX, lastY);
       showEraserCursor();
       // draw a dot immediately in case the stroke ends right here without moving
@@ -1028,6 +1048,13 @@
 
       if(gestureMode !== 'draw' || !drawing) return;
 
+      // A bare finger is a noisier input source than a stylus — a light
+      // exponential-moving-average tames the small tremor/jitter without
+      // adding noticeable lag. Pen/mouse input is precise enough already,
+      // so it goes through untouched (heavy smoothing there would just add
+      // lag for no benefit).
+      const jitterAlpha = e.pointerType === 'touch' ? 0.55 : 0;
+
       // Use getCoalescedEvents so fast strokes (especially with an Apple
       // Pencil / stylus) don't skip the many sub-frame points the browser
       // has actually recorded — without this, quick strokes look sparse
@@ -1036,7 +1063,12 @@
       if(!events.length) events = [e];
 
       events.forEach(ev => {
-        const [x, y] = pos(ev);
+        let [x, y] = pos(ev);
+        if(jitterAlpha){
+          smoothX = smoothX + (x - smoothX) * (1 - jitterAlpha);
+          smoothY = smoothY + (y - smoothY) * (1 - jitterAlpha);
+          x = smoothX; y = smoothY;
+        }
         const pressure = ev.pressure && ev.pressure > 0 ? ev.pressure : 0.5;
         const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
         ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
@@ -1060,17 +1092,51 @@
 
       lastX = p2x; lastY = p2y;
       moveEraserCursor(lastX, lastY);
+
+      // Predictive tip: the browser's own best guess at where the pen is
+      // headed next, drawn on a separate transparent overlay canvas so it
+      // never touches the real drawing. This closes most of the visible
+      // gap between the physical pen tip and the ink when writing quickly.
+      // It's redrawn from scratch every move and wiped on lift/scroll, so a
+      // wrong guess never leaves a permanent mark — the next real point
+      // always continues from the last *committed* point, not the guess.
+      if(predCtx){
+        clearPredictive();
+        const predicted = e.getPredictedEvents && e.getPredictedEvents();
+        if(predicted && predicted.length){
+          const [px, py] = pos(predicted[0]);
+          const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
+          const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
+          predCtx.globalCompositeOperation = 'source-over';
+          predCtx.strokeStyle = drawState.erasing ? 'rgba(255,255,255,0.35)' : drawState.color;
+          predCtx.lineWidth = width;
+          predCtx.beginPath();
+          predCtx.moveTo(p2x, p2y);
+          predCtx.lineTo(px, py);
+          predCtx.stroke();
+        }
+      }
     });
 
     function endPointer(e){
       activePointers.delete(e.pointerId);
       hideEraserCursor();
+      clearPredictive();
       if(gestureMode === 'scroll'){
         if(activePointers.size === 0) gestureMode = 'idle';
         return;
       }
       if(gestureMode === 'draw' && drawing){
         drawing = false; gestureMode = 'idle';
+        // The midpoint-curve technique always stops drawing at the midpoint
+        // between the last two points, never at the true final point — cap
+        // the stroke off with a straight segment to that last point so it
+        // doesn't look clipped right where the pen lifted.
+        const cx = (p1x + p2x) / 2, cy = (p1y + p2y) / 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(p2x, p2y);
+        ctx.stroke();
         saveDrawing(); growIfNear(lastY);
       }
     }
