@@ -126,7 +126,7 @@
   .trash-row.active{ background: var(--active); color: var(--text); }
 
   /* ---------- MAIN / GRID ---------- */
-  .main{ display:flex; flex-direction:column; min-height:0; grid-column: 2; }
+  .main{ display:flex; flex-direction:column; min-height:0; min-width:0; grid-column: 2; }
   .mobile-back{ display:none; background:none; border:none; color: var(--text-secondary); font-size:13px; padding: 14px 20px 0 20px; cursor:pointer; text-align:left; align-items:center; gap:6px; }
   .mobile-back svg{ width:14px; height:14px; }
   @media (max-width: 780px){ .mobile-back{ display:flex; } }
@@ -181,7 +181,8 @@
   /* ---------- EDITOR ---------- */
   .topbar{ display:flex; align-items:center; justify-content:space-between; gap:2px; padding: calc(14px + env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right)) 0 24px; }
   .topbar-left{ display:flex; align-items:center; gap:2px; }
-  .topbar-right{ display:flex; align-items:center; gap:2px; }
+  .topbar-right{ display:flex; align-items:center; gap:2px; min-width:0; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+  .topbar-right::-webkit-scrollbar{ display:none; }
   .icon-btn.active-toggle{ background: var(--active); color: var(--text); }
   .icon-btn:disabled{ opacity:.3; cursor:default; }
   .icon-btn:disabled:hover{ background:none; color:var(--text-secondary); }
@@ -194,9 +195,22 @@
   .mode-pill svg{ width:13px; height:13px; }
 
   .page-scroll{ flex:1; overflow-y:auto; }
+  .page-scroll.draw-scroll{ display:flex; flex-direction:column; overflow:hidden; }
   .page-wrap{ max-width: 720px; margin: 0 auto; padding: 14px 60px 80px 60px; }
-  .page-wrap.draw-wrap{ max-width: 880px; }
-  @media (max-width: 780px){ .page-wrap{ padding: 12px 22px 60px 22px; } }
+  .page-wrap.draw-wrap{ max-width: 1400px; width:100%; padding: 10px 20px 12px 20px; display:flex; flex-direction:column; flex:1; min-height:0; }
+  .page-wrap.draw-wrap .page-icon, .page-wrap.draw-wrap .page-title, .page-wrap.draw-wrap .props-row, .page-wrap.draw-wrap .divider{ flex-shrink:0; }
+  .page-wrap.draw-wrap{ gap:0; }
+  .page-wrap.draw-wrap .page-icon{ font-size:20px; padding:3px; margin-bottom:0; }
+  .page-wrap.draw-wrap .page-title{ font-size:16px; font-weight:700; margin: 2px 0 6px 0; }
+  .page-wrap.draw-wrap .props-row{ margin-bottom: 8px; }
+  .page-wrap.draw-wrap .divider{ margin: 0 0 8px 0; }
+  .page-wrap.draw-wrap .footer-meta{ flex-shrink:0; margin-top:6px; }
+  .page-wrap.draw-wrap .canvas-shell{ flex:1; min-height:0; height:auto; }
+  .page-wrap.draw-wrap .stylus-hint{ flex-shrink:0; margin-top:6px; }
+  @media (max-width: 780px){
+    .page-wrap{ padding: 12px 22px 60px 22px; }
+    .page-wrap.draw-wrap{ padding: 8px 10px 8px 10px; }
+  }
 
   .page-icon{ font-size:48px; line-height:1; cursor:pointer; display:inline-block; padding:6px; border-radius:10px; margin-bottom: 2px; }
   .page-icon:hover{ background: var(--hover); }
@@ -422,7 +436,7 @@
   let mobileShowingMain = false;
   let undoStack = [], redoStack = [];
   let checkpointed = false;
-  let drawState = { color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false, panMode: false };
+  let drawState = { color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false, fingerDraw: false };
   let focusMode = false;
 
   // browsing state for the grid
@@ -776,7 +790,7 @@
         </div>
       </div>
 
-      <div class="page-scroll"><div class="page-wrap ${mode==='draw'?'draw-wrap':''}">
+      <div class="page-scroll ${mode==='draw'?'draw-scroll':''}"><div class="page-wrap ${mode==='draw'?'draw-wrap':''}">
         <div class="page-icon" id="pageIcon" title="Change icon">${note.icon || '📄'}</div>
         <input class="page-title" id="titleInput" placeholder="Untitled" value="${escapeHtml(note.title)}" />
 
@@ -838,18 +852,18 @@
         </div>
 
         <div class="canvas-toolbar">
-          <button class="ct-btn ${!drawState.erasing && !drawState.panMode?'active':''}" id="penBtn" title="Pen color">
+          <button class="ct-btn ${!drawState.erasing?'active':''}" id="penBtn" title="Pen color">
             ${ICONS.pen}<span class="ct-dot" style="background:${drawState.color};"></span><span class="ct-label">Pen</span>
           </button>
           <button class="ct-btn ${drawState.erasing?'active':''}" id="eraserBtn" title="Eraser">${ICONS.eraser}<span class="ct-label">Eraser</span></button>
-          <button class="ct-btn ${drawState.panMode?'active':''}" id="panBtn" title="Scroll with one finger instead of two">${ICONS.hand}<span class="ct-label">Scroll</span></button>
+          <button class="ct-btn ${drawState.fingerDraw?'active':''}" id="panBtn" title="${drawState.fingerDraw ? 'Finger draws — tap to have one finger scroll instead' : 'One finger scrolls — tap to draw with your finger instead'}">${ICONS.hand}<span class="ct-label">${drawState.fingerDraw ? 'Finger' : 'Scroll'}</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
       </div>
-      <div class="stylus-hint">The page grows as you write. Scroll with two fingers, or tap "Scroll" in the toolbar to scroll with one finger instead of drawing.</div>
+      <div class="stylus-hint">The page grows as you write. One finger scrolls; use a stylus (or tap "Finger" in the toolbar) to draw.</div>
     `;
   }
 
@@ -901,10 +915,10 @@
       commitMutation();
     }
 
-    // Hand-rolled gesture routing: a single finger, stylus, or mouse draws;
-    // two fingers together scroll the page. We can't rely on the browser's own
-    // two-finger-scroll-through-touch-action-none behavior — it isn't consistent
-    // across iPad Safari/Chrome — so we track active touches ourselves.
+    // Gesture routing: pen/stylus and mouse always draw. A bare finger touch
+    // scrolls by default (one finger is enough — no need to bring in a second
+    // finger just to scroll), unless "Draw with finger" is toggled on, in
+    // which case a single finger draws instead and two fingers scroll.
     let activePointers = new Map(); // pointerId -> {x, y}
     let gestureMode = 'idle'; // 'draw' | 'scroll' | 'idle'
     let scrollStartY = 0, scrollStartTop = 0;
@@ -917,10 +931,14 @@
     canvas.addEventListener('pointerdown', (e) => {
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-      const shouldScroll = drawState.panMode || activePointers.size >= 2;
+      const isTouch = e.pointerType === 'touch';
+      const shouldScroll = isTouch
+        ? (drawState.fingerDraw ? activePointers.size >= 2 : true)
+        : false;
+
       if(shouldScroll){
-        // A second finger just landed (or Scroll mode is on) — abandon any
-        // in-progress stroke and scroll instead.
+        // Finger touch (in default mode), or a second finger, or Scroll mode
+        // explicitly on — abandon any in-progress stroke and scroll instead.
         drawing = false;
         gestureMode = 'scroll';
         scrollStartY = avgY();
@@ -930,7 +948,7 @@
 
       gestureMode = 'draw';
       drawing = true;
-      canvas.setPointerCapture(e.pointerId);
+      try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       [lastX, lastY] = pos(e);
     });
 
@@ -1096,7 +1114,6 @@
       penBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         drawState.erasing = false;
-        drawState.panMode = false;
         drawState.colorPopoverOpen = !drawState.colorPopoverOpen;
         drawState.bgPopoverOpen = false;
         renderPage(note);
@@ -1115,14 +1132,13 @@
       document.getElementById('eraserBtn').addEventListener('click', (e) => {
         e.stopPropagation();
         drawState.erasing = !drawState.erasing;
-        drawState.panMode = false;
         drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false;
         renderPage(note);
       });
 
       document.getElementById('panBtn').addEventListener('click', (e) => {
         e.stopPropagation();
-        drawState.panMode = !drawState.panMode;
+        drawState.fingerDraw = !drawState.fingerDraw;
         drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false;
         renderPage(note);
       });
