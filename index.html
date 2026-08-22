@@ -374,7 +374,7 @@
   const FOLDER_COLORS = ['#ff5a5f','#ff9f43','#ffd23f','#4ade80','#38bdf8','#818cf8','#c084fc','#f472b6'];
   const DEFAULT_CANVAS_HEIGHT = 1400;
   const GROW_STEP = 800;
-  const GROW_MARGIN = 220;
+  const GROW_MARGIN = 450;
 
   const ICONS = {
     star: (filled) => `<svg viewBox="0 0 24 24" fill="${filled?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
@@ -864,6 +864,17 @@
     }
 
     let ctx = sizeCanvasTo(cssH, cssH);
+    let growing = false;
+    function growIfNear(edgeY){
+      if(growing) return;
+      if(cssH - edgeY < GROW_MARGIN){
+        growing = true;
+        const oldH = cssH;
+        ctx = sizeCanvasTo(cssH + GROW_STEP, oldH);
+        commitMutation();
+        setTimeout(() => { growing = false; }, 30);
+      }
+    }
 
     let drawing = false, lastX = 0, lastY = 0;
     function pos(e){ const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
@@ -872,13 +883,6 @@
       note.drawing = canvas.toDataURL('image/png');
       note.updatedAt = Date.now();
       commitMutation();
-    }
-    function maybeGrowPage(){
-      if(cssH - lastY < GROW_MARGIN){
-        const oldH = cssH;
-        ctx = sizeCanvasTo(cssH + GROW_STEP, oldH);
-        commitMutation();
-      }
     }
     canvas.addEventListener('pointerdown', (e) => {
       canvas.setPointerCapture(e.pointerId);
@@ -894,10 +898,17 @@
       ctx.lineWidth = width;
       ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke();
       [lastX, lastY] = [x, y];
+      growIfNear(y);
     });
     ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, () => {
-      if(drawing){ drawing = false; saveDrawing(); maybeGrowPage(); }
+      if(drawing){ drawing = false; saveDrawing(); growIfNear(lastY); }
     }));
+
+    // grow the page as you scroll toward the bottom too, not just while drawing —
+    // makes it feel like one continuous, endless page instead of a fixed sheet
+    scrollEl.addEventListener('scroll', () => {
+      growIfNear(scrollEl.scrollTop + scrollEl.clientHeight);
+    }, { passive: true });
 
     // resume scroll position near where they left off (bottom of drawn content) on first open
     if(note.drawing) requestAnimationFrame(() => { scrollEl.scrollTop = 0; });
