@@ -892,12 +892,49 @@
       note.updatedAt = Date.now();
       commitMutation();
     }
+
+    // Hand-rolled gesture routing: a single finger, stylus, or mouse draws;
+    // two fingers together scroll the page. We can't rely on the browser's own
+    // two-finger-scroll-through-touch-action-none behavior — it isn't consistent
+    // across iPad Safari/Chrome — so we track active touches ourselves.
+    let activePointers = new Map(); // pointerId -> {x, y}
+    let gestureMode = 'idle'; // 'draw' | 'scroll' | 'idle'
+    let scrollStartY = 0, scrollStartTop = 0;
+
+    function avgY(){
+      const pts = Array.from(activePointers.values());
+      return pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    }
+
     canvas.addEventListener('pointerdown', (e) => {
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if(activePointers.size >= 2){
+        // A second finger just landed — abandon any in-progress stroke and scroll instead.
+        drawing = false;
+        gestureMode = 'scroll';
+        scrollStartY = avgY();
+        scrollStartTop = scrollEl.scrollTop;
+        return;
+      }
+
+      gestureMode = 'draw';
+      drawing = true;
       canvas.setPointerCapture(e.pointerId);
-      drawing = true; [lastX, lastY] = pos(e);
+      [lastX, lastY] = pos(e);
     });
+
     canvas.addEventListener('pointermove', (e) => {
-      if(!drawing) return;
+      if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if(gestureMode === 'scroll'){
+        if(activePointers.size < 2) return;
+        const delta = scrollStartY - avgY();
+        scrollEl.scrollTop = scrollStartTop + delta;
+        return;
+      }
+
+      if(gestureMode !== 'draw' || !drawing) return;
       const [x, y] = pos(e);
       const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
       const width = drawState.erasing ? 18 : Math.max(1.2, pressure * 6);
@@ -908,9 +945,19 @@
       [lastX, lastY] = [x, y];
       growIfNear(y);
     });
-    ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, () => {
-      if(drawing){ drawing = false; saveDrawing(); growIfNear(lastY); }
-    }));
+
+    function endPointer(e){
+      activePointers.delete(e.pointerId);
+      if(gestureMode === 'scroll'){
+        if(activePointers.size < 2) gestureMode = 'idle';
+        return;
+      }
+      if(gestureMode === 'draw' && drawing){
+        drawing = false; gestureMode = 'idle';
+        saveDrawing(); growIfNear(lastY);
+      }
+    }
+    ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, endPointer));
 
     // grow the page as you scroll toward the bottom too, not just while drawing —
     // makes it feel like one continuous, endless page instead of a fixed sheet
