@@ -944,6 +944,7 @@
     }
 
     let drawing = false, lastX = 0, lastY = 0;
+    let p1x = 0, p1y = 0, p2x = 0, p2y = 0; // rolling point buffer for curve smoothing
     function pos(e){ const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
 
     const eraserCursor = document.getElementById('eraserCursor');
@@ -1000,8 +1001,16 @@
       drawing = true;
       try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       [lastX, lastY] = pos(e);
+      p1x = p2x = lastX; p1y = p2y = lastY;
       moveEraserCursor(lastX, lastY);
       showEraserCursor();
+      // draw a dot immediately in case the stroke ends right here without moving
+      const startPressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
+      const startWidth = drawState.erasing ? drawState.eraserSize : Math.max(1.2, startPressure * 6);
+      ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
+      ctx.strokeStyle = drawState.color;
+      ctx.lineWidth = startWidth;
+      ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(lastX, lastY); ctx.stroke();
     });
 
     canvas.addEventListener('pointermove', (e) => {
@@ -1013,19 +1022,44 @@
         return;
       }
 
-      const [x, y] = pos(e);
-      moveEraserCursor(x, y);
+      const [hx, hy] = pos(e);
+      moveEraserCursor(hx, hy);
       if(e.pointerType !== 'touch') showEraserCursor();
 
       if(gestureMode !== 'draw' || !drawing) return;
-      const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
-      const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
-      ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = drawState.color;
-      ctx.lineWidth = width;
-      ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke();
-      [lastX, lastY] = [x, y];
-      growIfNear(y);
+
+      // Use getCoalescedEvents so fast strokes (especially with an Apple
+      // Pencil / stylus) don't skip the many sub-frame points the browser
+      // has actually recorded — without this, quick strokes look sparse
+      // and jagged even though the hardware sampled far more points.
+      let events = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+      if(!events.length) events = [e];
+
+      events.forEach(ev => {
+        const [x, y] = pos(ev);
+        const pressure = ev.pressure && ev.pressure > 0 ? ev.pressure : 0.5;
+        const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
+        ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
+        ctx.strokeStyle = drawState.color;
+        ctx.lineWidth = width;
+
+        // Quadratic-curve smoothing: draw through the midpoints of
+        // consecutive raw points, using the middle point as the control
+        // point. This rounds off the faceted, angular look you get from
+        // just connecting raw points with straight lineTo segments.
+        const c1x = (p1x + p2x) / 2, c1y = (p1y + p2y) / 2;
+        const c2x = (p2x + x) / 2, c2y = (p2y + y) / 2;
+        ctx.beginPath();
+        ctx.moveTo(c1x, c1y);
+        ctx.quadraticCurveTo(p2x, p2y, c2x, c2y);
+        ctx.stroke();
+
+        p1x = p2x; p1y = p2y; p2x = x; p2y = y;
+        growIfNear(y);
+      });
+
+      lastX = p2x; lastY = p2y;
+      moveEraserCursor(lastX, lastY);
     });
 
     function endPointer(e){
