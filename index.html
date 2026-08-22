@@ -62,7 +62,9 @@
   .toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
   .toast .dot{ width:6px; height:6px; border-radius:50%; background:#4ade80; flex-shrink:0; }
 
-  .app{ display: grid; grid-template-columns: 250px 1fr; height: 100%; }
+  .app{ display: grid; grid-template-columns: 250px 1fr; height: 100%; transition: grid-template-columns .18s ease; }
+  .app.focus-mode{ grid-template-columns: 0px 1fr; }
+  .app.focus-mode .sidebar{ display: none; }
   @media (max-width: 780px){
     .app{ grid-template-columns: 1fr; }
     .sidebar{ display: flex; }
@@ -405,6 +407,9 @@
     back: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>`,
     image: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>`,
     upload: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`,
+    expand: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`,
+    collapse: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3v3a2 2 0 0 1-2 2H4"/><path d="M15 3v3a2 2 0 0 0 2 2h3"/><path d="M9 21v-3a2 2 0 0 0-2-2H4"/><path d="M15 21v-3a2 2 0 0 1 2-2h3"/></svg>`,
+    hand: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v5"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 8.5a2 2 0 0 1 4 0V13a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6.14-3.11l-3.28-4.5a1.8 1.8 0 0 1 .5-2.29 1.8 1.8 0 0 1 2.4.13L8 14"/></svg>`,
   };
 
   let notes = [];
@@ -417,7 +422,8 @@
   let mobileShowingMain = false;
   let undoStack = [], redoStack = [];
   let checkpointed = false;
-  let drawState = { color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false };
+  let drawState = { color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false, panMode: false };
+  let focusMode = false;
 
   // browsing state for the grid
   let nav = 'home';          // 'home' | 'notes' | 'gallery' | 'folder'
@@ -748,6 +754,7 @@
           <button class="close-editor" id="closeEditorBtn">${ICONS.back}All Notes</button>
         </div>
         <div class="topbar-right">
+          <button class="icon-btn ${focusMode?'active-toggle':''}" id="focusBtn" title="${focusMode?'Exit full screen':'Full screen — hide the sidebar for more writing room'}">${focusMode?ICONS.collapse:ICONS.expand}</button>
           <button class="icon-btn" id="undoBtn" title="Undo (Ctrl+Z)" ${undoStack.length?'':'disabled'}>${ICONS.undo}</button>
           <button class="icon-btn" id="redoBtn" title="Redo (Ctrl+Shift+Z)" ${redoStack.length?'':'disabled'}>${ICONS.redo}</button>
           <div class="mode-pill">
@@ -831,17 +838,18 @@
         </div>
 
         <div class="canvas-toolbar">
-          <button class="ct-btn ${!drawState.erasing?'active':''}" id="penBtn" title="Pen color">
+          <button class="ct-btn ${!drawState.erasing && !drawState.panMode?'active':''}" id="penBtn" title="Pen color">
             ${ICONS.pen}<span class="ct-dot" style="background:${drawState.color};"></span><span class="ct-label">Pen</span>
           </button>
           <button class="ct-btn ${drawState.erasing?'active':''}" id="eraserBtn" title="Eraser">${ICONS.eraser}<span class="ct-label">Eraser</span></button>
+          <button class="ct-btn ${drawState.panMode?'active':''}" id="panBtn" title="Scroll with one finger instead of two">${ICONS.hand}<span class="ct-label">Scroll</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
       </div>
-      <div class="stylus-hint">Draw with a stylus, mouse, or finger — the page scrolls and grows as you go. Use two fingers, the scrollbar, or a trackpad to scroll without drawing.</div>
+      <div class="stylus-hint">The page grows as you write. Scroll with two fingers, or tap "Scroll" in the toolbar to scroll with one finger instead of drawing.</div>
     `;
   }
 
@@ -909,8 +917,10 @@
     canvas.addEventListener('pointerdown', (e) => {
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-      if(activePointers.size >= 2){
-        // A second finger just landed — abandon any in-progress stroke and scroll instead.
+      const shouldScroll = drawState.panMode || activePointers.size >= 2;
+      if(shouldScroll){
+        // A second finger just landed (or Scroll mode is on) — abandon any
+        // in-progress stroke and scroll instead.
         drawing = false;
         gestureMode = 'scroll';
         scrollStartY = avgY();
@@ -928,7 +938,6 @@
       if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if(gestureMode === 'scroll'){
-        if(activePointers.size < 2) return;
         const delta = scrollStartY - avgY();
         scrollEl.scrollTop = scrollStartTop + delta;
         return;
@@ -949,7 +958,7 @@
     function endPointer(e){
       activePointers.delete(e.pointerId);
       if(gestureMode === 'scroll'){
-        if(activePointers.size < 2) gestureMode = 'idle';
+        if(activePointers.size === 0) gestureMode = 'idle';
         return;
       }
       if(gestureMode === 'draw' && drawing){
@@ -989,6 +998,8 @@
       scheduleSave();
     }
     activeId = null; mobileShowingMain = false; folderPickerOpen = false;
+    focusMode = false;
+    document.getElementById('app').classList.remove('focus-mode');
     renderAll();
   }
 
@@ -997,6 +1008,11 @@
     if(backBtn) backBtn.addEventListener('click', () => { closeEditor(note); });
     document.getElementById('closeEditorBtn').addEventListener('click', () => { closeEditor(note); });
 
+    document.getElementById('focusBtn').addEventListener('click', () => {
+      focusMode = !focusMode;
+      document.getElementById('app').classList.toggle('focus-mode', focusMode);
+      renderPage(note);
+    });
     document.getElementById('undoBtn').addEventListener('click', doUndo);
     document.getElementById('redoBtn').addEventListener('click', doRedo);
 
@@ -1080,6 +1096,7 @@
       penBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         drawState.erasing = false;
+        drawState.panMode = false;
         drawState.colorPopoverOpen = !drawState.colorPopoverOpen;
         drawState.bgPopoverOpen = false;
         renderPage(note);
@@ -1098,6 +1115,14 @@
       document.getElementById('eraserBtn').addEventListener('click', (e) => {
         e.stopPropagation();
         drawState.erasing = !drawState.erasing;
+        drawState.panMode = false;
+        drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false;
+        renderPage(note);
+      });
+
+      document.getElementById('panBtn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        drawState.panMode = !drawState.panMode;
         drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false;
         renderPage(note);
       });
