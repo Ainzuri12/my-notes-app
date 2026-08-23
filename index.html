@@ -961,9 +961,107 @@
     }
 
     let drawing = false, lastX = 0, lastY = 0;
-    let p1x = 0, p1y = 0, p2x = 0, p2y = 0; // rolling point buffer for curve smoothing
     let smoothX = 0, smoothY = 0; // running exponential-average position, tames finger jitter
     function pos(e){ const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+
+    // Stamping filled circles along the path (instead of stroking a fixed-
+    // width line) is what lets the line's width flow continuously with
+    // pressure/velocity/taper rather than jumping between fixed-width
+    // segments — the same core trick real drawing apps use for a tapered,
+    // organic pen line instead of a uniform ruled one.
+    function stampCircle(targetCtx, x, y, r){
+      targetCtx.beginPath();
+      targetCtx.arc(x, y, Math.max(0.4, r), 0, Math.PI * 2);
+      targetCtx.fill();
+    }
+    // Fills a tapered ribbon between two points by sampling many circles
+    // along the segment — substep density scales with distance so fast
+    // strokes (fewer, farther-apart real samples) still render continuous
+    // ink instead of visible dots.
+    function stampSegment(targetCtx, x0, y0, r0, x1, y1, r1){
+      const dist = Math.hypot(x1 - x0, y1 - y0);
+      const steps = Math.max(1, Math.ceil(dist / 1.4));
+      for(let i = 1; i <= steps; i++){
+        const t = i / steps;
+        stampCircle(targetCtx, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r0 + (r1 - r0) * t);
+      }
+    }
+
+    // Real ink (and Notability's pen) tapers in from a point when you touch
+    // down, tapers back out when you lift, and runs thinner the faster you
+    // move — not just pressure-driven. START_TAPER/END_TAPER are measured
+    // in px of travel, not point-count, so they behave the same regardless
+    // of sampling density.
+    const START_TAPER_DIST = 14;
+    const END_TAPER_DIST = 16;
+    // How much of the tail (in px of travel) we keep "live" — redrawable on
+    // the overlay — rather than baking straight to the real canvas. Needs
+    // to comfortably exceed END_TAPER_DIST so the true lift-off taper can
+    // still reshape it once the stroke actually ends.
+    const TAIL_WINDOW_DIST = END_TAPER_DIST * 3;
+
+    function baseRadiusFor(pressure, dist, cum){
+      const pressureR = Math.max(1.2, pressure * 6) / 2;
+      const speedScale = Math.max(0.55, 1 - Math.min(dist, 20) / 20 * 0.45);
+      const startT = Math.min(1, cum / START_TAPER_DIST);
+      const startTaper = 0.28 + 0.72 * startT;
+      return pressureR * speedScale * startTaper;
+    }
+    function endTaperedRadius(r, distFromEnd){
+      const t = Math.min(1, Math.max(0, distFromEnd) / END_TAPER_DIST);
+      return r * (0.18 + 0.82 * t);
+    }
+
+    // strokePts holds every real (post-jitter-smoothing) point of the
+    // in-progress pen stroke: {x, y, r, cum}. Points older than the tail
+    // window get baked permanently onto the real canvas as soon as they're
+    // safely out of range of the eventual lift-off taper; bakedCount tracks
+    // how many are already committed. Everything from bakedCount onward is
+    // still "live" and redrawn from scratch each frame on the transparent
+    // overlay canvas, so it can still be reshaped right up until the pen
+    // actually lifts — that's what lets the tail taper correctly instead of
+    // permanently baking-in a guess that turns out wrong.
+    let strokePts = [];
+    let bakedCount = 0;
+    let strokeIsErasing = false;
+
+    function bakeUpTo(uptoIdx){
+      if(uptoIdx <= bakedCount) return;
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.fillStyle = drawState.color;
+      for(let i = bakedCount; i < uptoIdx; i++){
+        const a = strokePts[i - 1], b = strokePts[i];
+        stampSegment(ctx, a.x, a.y, a.r, b.x, b.y, b.r);
+      }
+      bakedCount = uptoIdx;
+    }
+
+    // Redraws the still-live tail (from the last baked point to the current
+    // end, optionally extended by a speculative predicted point) onto the
+    // overlay canvas with the true end-taper applied. Cheap and safe to
+    // call every frame since it only ever touches the small tail window.
+    function renderLiveTail(extraPt){
+      if(!predCtx) return;
+      clearPredictive();
+      if(strokePts.length < 1) return;
+      const lastReal = strokePts[strokePts.length - 1];
+      const total = lastReal.cum + (extraPt ? Math.hypot(extraPt.x - lastReal.x, extraPt.y - lastReal.y) : 0);
+      const pts = strokePts.slice(Math.max(0, bakedCount - 1));
+      const all = extraPt ? pts.concat([{ x: extraPt.x, y: extraPt.y, r: extraPt.r, cum: total }]) : pts;
+      predCtx.globalCompositeOperation = 'source-over';
+      predCtx.fillStyle = drawState.color;
+      if(all.length === 1){
+        const only = all[0];
+        stampCircle(predCtx, only.x, only.y, endTaperedRadius(only.r, total - only.cum));
+        return;
+      }
+      for(let i = 1; i < all.length; i++){
+        const a = all[i - 1], b = all[i];
+        const ra = endTaperedRadius(a.r, total - a.cum);
+        const rb = endTaperedRadius(b.r, total - b.cum);
+        stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb);
+      }
+    }
 
     const eraserCursor = document.getElementById('eraserCursor');
     updateEraserCursorSize();
@@ -1019,18 +1117,31 @@
       gestureMode = 'draw';
       drawing = true;
       try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
-      [lastX, lastY] = pos(e);
-      p1x = p2x = lastX; p1y = p2y = lastY;
-      smoothX = lastX; smoothY = lastY;
-      moveEraserCursor(lastX, lastY);
+      const [x, y] = pos(e);
+      lastX = x; lastY = y; smoothX = x; smoothY = y;
+      moveEraserCursor(x, y);
       showEraserCursor();
-      // draw a dot immediately in case the stroke ends right here without moving
-      const startPressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
-      const startWidth = drawState.erasing ? drawState.eraserSize : Math.max(1.2, startPressure * 6);
-      ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
-      ctx.strokeStyle = drawState.color;
-      ctx.lineWidth = startWidth;
-      ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(lastX, lastY); ctx.stroke();
+
+      strokeIsErasing = drawState.erasing;
+      ctx.globalCompositeOperation = strokeIsErasing ? 'destination-out' : 'source-over';
+      ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
+
+      if(strokeIsErasing){
+        // Eraser stays simple, immediate, and constant-width — painted
+        // straight onto the real canvas as you go. Predictable removal
+        // matters more here than tapered artistry.
+        stampCircle(ctx, x, y, drawState.eraserSize / 2);
+        return;
+      }
+
+      const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
+      const startR = baseRadiusFor(pressure, 0, 0);
+      strokePts = [{ x, y, r: startR, cum: 0 }];
+      bakedCount = 1;
+      // Bake the start point immediately (its own taper is already fully
+      // determined and never needs revising) so a tap-and-lift still leaves
+      // a mark even before any pointermove fires.
+      stampCircle(ctx, x, y, startR);
     });
 
     canvas.addEventListener('pointermove', (e) => {
@@ -1062,6 +1173,25 @@
       let events = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
       if(!events.length) events = [e];
 
+      if(strokeIsErasing){
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = '#000';
+        const r = drawState.eraserSize / 2;
+        events.forEach(ev => {
+          let [x, y] = pos(ev);
+          if(jitterAlpha){
+            smoothX = smoothX + (x - smoothX) * (1 - jitterAlpha);
+            smoothY = smoothY + (y - smoothY) * (1 - jitterAlpha);
+            x = smoothX; y = smoothY;
+          }
+          stampSegment(ctx, lastX, lastY, r, x, y, r);
+          lastX = x; lastY = y;
+          growIfNear(y);
+        });
+        moveEraserCursor(lastX, lastY);
+        return;
+      }
+
       events.forEach(ev => {
         let [x, y] = pos(ev);
         if(jitterAlpha){
@@ -1070,52 +1200,36 @@
           x = smoothX; y = smoothY;
         }
         const pressure = ev.pressure && ev.pressure > 0 ? ev.pressure : 0.5;
-        const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
-        ctx.globalCompositeOperation = drawState.erasing ? 'destination-out' : 'source-over';
-        ctx.strokeStyle = drawState.color;
-        ctx.lineWidth = width;
-
-        // Quadratic-curve smoothing: draw through the midpoints of
-        // consecutive raw points, using the middle point as the control
-        // point. This rounds off the faceted, angular look you get from
-        // just connecting raw points with straight lineTo segments.
-        const c1x = (p1x + p2x) / 2, c1y = (p1y + p2y) / 2;
-        const c2x = (p2x + x) / 2, c2y = (p2y + y) / 2;
-        ctx.beginPath();
-        ctx.moveTo(c1x, c1y);
-        ctx.quadraticCurveTo(p2x, p2y, c2x, c2y);
-        ctx.stroke();
-
-        p1x = p2x; p1y = p2y; p2x = x; p2y = y;
+        const prev = strokePts[strokePts.length - 1];
+        const dist = Math.hypot(x - prev.x, y - prev.y);
+        const cum = prev.cum + dist;
+        strokePts.push({ x, y, r: baseRadiusFor(pressure, dist, cum), cum });
+        lastX = x; lastY = y;
         growIfNear(y);
       });
 
-      lastX = p2x; lastY = p2y;
-      moveEraserCursor(lastX, lastY);
+      // Bake everything that's now safely behind the taper window onto the
+      // real canvas; keep only the tail live so it can still be reshaped by
+      // the true lift-off taper (or more incoming points) later.
+      const total = strokePts[strokePts.length - 1].cum;
+      let tailStart = strokePts.length - 1;
+      while(tailStart > 0 && total - strokePts[tailStart].cum < TAIL_WINDOW_DIST) tailStart--;
+      bakeUpTo(Math.max(bakedCount, tailStart));
 
       // Predictive tip: the browser's own best guess at where the pen is
-      // headed next, drawn on a separate transparent overlay canvas so it
-      // never touches the real drawing. This closes most of the visible
-      // gap between the physical pen tip and the ink when writing quickly.
+      // headed next, layered onto the same live tail so it blends with the
+      // real ink's current width instead of a mismatched separate segment.
       // It's redrawn from scratch every move and wiped on lift/scroll, so a
       // wrong guess never leaves a permanent mark — the next real point
       // always continues from the last *committed* point, not the guess.
-      if(predCtx){
-        clearPredictive();
-        const predicted = e.getPredictedEvents && e.getPredictedEvents();
-        if(predicted && predicted.length){
-          const [px, py] = pos(predicted[0]);
-          const pressure = e.pressure && e.pressure > 0 ? e.pressure : 0.5;
-          const width = drawState.erasing ? drawState.eraserSize : Math.max(1.2, pressure * 6);
-          predCtx.globalCompositeOperation = 'source-over';
-          predCtx.strokeStyle = drawState.erasing ? 'rgba(255,255,255,0.35)' : drawState.color;
-          predCtx.lineWidth = width;
-          predCtx.beginPath();
-          predCtx.moveTo(p2x, p2y);
-          predCtx.lineTo(px, py);
-          predCtx.stroke();
-        }
+      let extraPt = null;
+      const predicted = e.getPredictedEvents && e.getPredictedEvents();
+      if(predicted && predicted.length){
+        const [px, py] = pos(predicted[0]);
+        extraPt = { x: px, y: py, r: strokePts[strokePts.length - 1].r };
       }
+      renderLiveTail(extraPt);
+      moveEraserCursor(lastX, lastY);
     });
 
     function endPointer(e){
@@ -1128,20 +1242,26 @@
       }
       if(gestureMode === 'draw' && drawing){
         drawing = false; gestureMode = 'idle';
-        // The midpoint-curve technique always stops drawing at the midpoint
-        // between the last two points, never at the true final point — cap
-        // the stroke off with a straight segment to that last point so it
-        // doesn't look clipped right where the pen lifted.
-        const cx = (p1x + p2x) / 2, cy = (p1y + p2y) / 2;
-        ctx.beginPath();
-        ctx.moveTo(cx, cy);
-        ctx.lineTo(p2x, p2y);
-        ctx.stroke();
+        if(!strokeIsErasing && strokePts.length > bakedCount){
+          // Now that we know exactly where the stroke really ends, bake the
+          // remaining live tail with the true lift-off taper applied.
+          const total = strokePts[strokePts.length - 1].cum;
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = drawState.color;
+          for(let i = bakedCount; i < strokePts.length; i++){
+            const a = strokePts[i - 1], b = strokePts[i];
+            const ra = endTaperedRadius(a.r, total - a.cum);
+            const rb = endTaperedRadius(b.r, total - b.cum);
+            stampSegment(ctx, a.x, a.y, ra, b.x, b.y, rb);
+          }
+        }
+        strokePts = []; bakedCount = 0;
         saveDrawing(); growIfNear(lastY);
       }
     }
     ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, endPointer));
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
 
     // grow the page as you scroll toward the bottom too, not just while drawing —
     // makes it feel like one continuous, endless page instead of a fixed sheet
