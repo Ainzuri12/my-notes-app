@@ -1098,6 +1098,13 @@
     let activePointers = new Map(); // pointerId -> {x, y}
     let gestureMode = 'idle'; // 'draw' | 'scroll' | 'idle'
     let scrollStartY = 0, scrollStartTop = 0;
+    // The pointer that actually owns the current draw stroke, if any. Once
+    // set, any *other* pointer touching down or moving (a resting palm, the
+    // side of your hand while writing with a stylus) is ignored outright
+    // instead of being allowed to hijack the shared gesture state into
+    // "scroll" mid-stroke — which is what silently truncated/dropped
+    // strokes whenever a palm grazed the screen while writing.
+    let primaryPointerId = null, primaryPointerType = null;
 
     function avgY(){
       const pts = Array.from(activePointers.values());
@@ -1106,6 +1113,15 @@
 
     canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+
+      if(gestureMode === 'draw' && drawing && primaryPointerType !== 'touch' && e.pointerType === 'touch'){
+        // Actively drawing with a pen or mouse — a touch landing now can
+        // only be incidental (palm, side of hand), never an intentional
+        // second input, so ignore it completely rather than letting it
+        // cancel the stroke.
+        return;
+      }
+
       clearPredictive();
       activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -1119,6 +1135,7 @@
         // explicitly on — abandon any in-progress stroke and scroll instead.
         drawing = false;
         gestureMode = 'scroll';
+        primaryPointerId = null; primaryPointerType = null;
         scrollStartY = avgY();
         scrollStartTop = scrollEl.scrollTop;
         hideEraserCursor();
@@ -1127,6 +1144,7 @@
 
       gestureMode = 'draw';
       drawing = true;
+      primaryPointerId = e.pointerId; primaryPointerType = e.pointerType;
       try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       const [x, y] = pos(e);
       lastX = x; lastY = y; smoothX = x; smoothY = y;
@@ -1156,6 +1174,13 @@
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      if(gestureMode === 'draw' && drawing && e.pointerId !== primaryPointerId){
+        // A non-primary pointer moving while a real stroke is in progress —
+        // almost certainly a palm/incidental touch we deliberately ignored
+        // on the way down. Never let it feed points into the active stroke.
+        return;
+      }
+
       if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
       if(gestureMode === 'scroll'){
@@ -1244,6 +1269,12 @@
     });
 
     function endPointer(e){
+      if(gestureMode === 'draw' && drawing && e.pointerId !== primaryPointerId){
+        // Lift-off of a pointer we ignored on the way down (palm, etc.) —
+        // it never touched the active stroke's state, so it shouldn't end
+        // it either. Just let the real drawing pointer keep going.
+        return;
+      }
       activePointers.delete(e.pointerId);
       hideEraserCursor();
       clearPredictive();
@@ -1253,6 +1284,7 @@
       }
       if(gestureMode === 'draw' && drawing){
         drawing = false; gestureMode = 'idle';
+        primaryPointerId = null; primaryPointerType = null;
         if(!strokeIsErasing && strokePts.length > bakedCount){
           // Now that we know exactly where the stroke really ends, bake the
           // remaining live tail with the true lift-off taper applied.
