@@ -1027,6 +1027,42 @@
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
     }
 
+    // The canvas's internal pixel grid is only recomputed when we
+    // explicitly resize it — nothing was re-syncing it if the canvas's
+    // on-screen *width* changed afterward (window/orientation change, the
+    // sidebar toggling, or launching as an installed PWA with different
+    // chrome than the Safari tab it was last sized in). When that
+    // happened, CSS kept stretching the canvas's display size to fit while
+    // its internal coordinate space stayed sized for the old width — so
+    // stylus input (measured in current on-screen CSS pixels) landed
+    // increasingly wrong the further from the left edge you wrote. Watch
+    // for width changes and re-sync, preserving whatever's currently drawn
+    // (not just the last-saved version) so nothing is lost mid-stroke.
+    let lastCssW = wrap.clientWidth;
+    function resyncWidthIfChanged(){
+      const newCssW = wrap.clientWidth;
+      if(Math.abs(newCssW - lastCssW) < 1) return;
+      lastCssW = newCssW;
+      const snapshot = canvas.toDataURL('image/png');
+      canvas.width = newCssW * ratio; canvas.height = cssH * ratio;
+      ctx = canvas.getContext('2d');
+      ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, newCssW, cssH);
+      img.src = snapshot;
+      if(predCanvas){
+        predCanvas.width = newCssW * ratio; predCanvas.height = cssH * ratio;
+        const pctx2 = predCanvas.getContext('2d');
+        pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
+      }
+    }
+    window.addEventListener('resize', resyncWidthIfChanged);
+    window.addEventListener('orientationchange', resyncWidthIfChanged);
+    // Also catch it the instant you touch down to draw — cheaper than a
+    // resize listener catching everything (e.g. a PWA's chrome settling a
+    // beat after launch) and guarantees the very first stroke is correct.
+    canvas.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
+
     let growing = false;
     function growIfNear(edgeY){
       if(growing) return;
@@ -1181,21 +1217,27 @@
     }
 
     // A resting palm/hand reports a much larger touch contact area than a
-    // fingertip or stylus tip — most touchscreens (including iPad) report
-    // this via PointerEvent.width/height. Use it to reject palm contact
-    // outright, whether it lands before, during, or after the pen — this is
-    // the actual root cause of drawing feeling "way worse" with a hand
-    // resting on the glass: without this, that contact was read as a
-    // legitimate one-finger-scroll touch and could shift the canvas or
-    // interrupt the stroke.
-    const PALM_CONTACT_PX = 40;
+    // fingertip, via PointerEvent.width/height on touchscreens that support
+    // it. But contact size alone isn't reliable enough to filter on for
+    // *every* touch — plenty of ordinary fingers report sizes that would
+    // trip a blanket threshold, which is exactly what broke plain one-
+    // finger scrolling. So this only kicks in when a stylus has genuinely
+    // been active moments ago: that's the actual scenario that mattered
+    // (a resting hand while writing with a pen), without touching normal
+    // finger-only scrolling at all.
+    const PALM_CONTACT_PX = 55;
+    const PEN_RECENCY_MS = 1200;
+    let lastPenActivityAt = 0;
+    function noteRecentPen(e){ if(e.pointerType === 'pen') lastPenActivityAt = Date.now(); }
     function looksLikePalm(e){
       if(e.pointerType !== 'touch') return false;
-      return (e.width || 0) > PALM_CONTACT_PX || (e.height || 0) > PALM_CONTACT_PX;
+      const big = (e.width || 0) > PALM_CONTACT_PX || (e.height || 0) > PALM_CONTACT_PX;
+      return big && (Date.now() - lastPenActivityAt) < PEN_RECENCY_MS;
     }
 
     canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      noteRecentPen(e);
 
       // If a text field (like the title) still has keyboard focus when you
       // start writing, iPadOS can sometimes read a quick pen stroke as a
@@ -1269,6 +1311,8 @@
     });
 
     canvas.addEventListener('pointermove', (e) => {
+      noteRecentPen(e);
+
       if(gestureMode === 'draw' && drawing && e.pointerId !== primaryPointerId){
         // A non-primary pointer moving while a real stroke is in progress —
         // almost certainly a palm/incidental touch we deliberately ignored
