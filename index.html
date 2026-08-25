@@ -62,6 +62,15 @@
   .toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
   .toast .dot{ width:6px; height:6px; border-radius:50%; background:#4ade80; flex-shrink:0; }
 
+  .update-banner{ position: fixed; top: 0; left: 0; right: 0; background: var(--accent, #4a7fff); color: #fff;
+    font-size: 13px; font-weight:600; padding: 10px 16px; display:flex; align-items:center; justify-content:center; gap:12px;
+    z-index: 1000; transform: translateY(-100%); transition: transform .25s ease;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px)); }
+  .update-banner.show{ transform: translateY(0); }
+  .update-banner button{ background: rgba(255,255,255,0.2); color:#fff; border:none; border-radius:8px; padding:4px 12px;
+    font-size:12.5px; font-weight:700; cursor:pointer; }
+  .update-banner button:active{ background: rgba(255,255,255,0.32); }
+
   .app{ display: grid; grid-template-columns: 250px 1fr; height: 100%; transition: grid-template-columns .18s ease; }
   .app.focus-mode{ grid-template-columns: 0px 1fr; }
   .app.focus-mode .sidebar{ display: none; }
@@ -409,6 +418,10 @@
 
 <div class="print-area" id="printArea"></div>
 <div class="toast" id="saveToast"><span class="dot"></span><span id="saveToastText">Saved</span></div>
+<div class="update-banner" id="updateBanner">
+  <span>A new version is ready</span>
+  <button id="updateBannerBtn">Refresh</button>
+</div>
 
 <script>
 (function(){
@@ -457,6 +470,14 @@
   let undoStack = [], redoStack = [];
   let checkpointed = false;
   let drawState = { color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false, eraserPopoverOpen: false, fingerDraw: false, eraserSize: 18, penSize: 6 };
+  // setupCanvas() re-runs on nearly every draw-tool interaction (popover
+  // toggles, swatch picks, undo/redo, etc.), each time wiring a fresh
+  // canvas element. Its resize/orientationchange listeners live on
+  // `window`, though, which never gets destroyed the way the canvas does —
+  // so without tracking and removing the previous one, every single one of
+  // those interactions would permanently leak another listener pointing at
+  // an increasingly stale (eventually detached) canvas closure.
+  let currentCanvasResizeHandler = null;
 
   function updateEraserCursorSize(){
     const c = document.getElementById('eraserCursor');
@@ -693,12 +714,17 @@
     document.getElementById('trashLabel').textContent = trashCount ? `Trash (${trashCount})` : 'Trash';
     document.getElementById('trashRow').classList.toggle('active', activeId === '__trash__');
 
-    document.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click', () => {
+    // These three nav buttons (Home/Notes/Gallery) live in the static shell
+    // and are never destroyed/recreated, unlike the folder rows below —
+    // using .onclick instead of addEventListener means each call to
+    // renderSidebar() (which happens on almost every state change) replaces
+    // the handler instead of permanently stacking another one on top of it.
+    document.querySelectorAll('[data-nav]').forEach(el => { el.onclick = () => {
       const openNote = activeId && activeId !== '__trash__' ? notes.find(n => n.id === activeId) : null;
       if(openNote && isBlankNote(openNote)) notes = notes.filter(n => n.id !== openNote.id);
       nav = el.dataset.nav; activeFolderId = null; tab = 'all'; activeId = null; mobileShowingMain = false;
       renderAll();
-    }));
+    }; });
     document.querySelectorAll('[data-open-folder]').forEach(el => el.addEventListener('click', (e) => {
       if(e.target.closest('[data-del-folder]')) return;
       nav = 'folder'; activeFolderId = el.dataset.openFolder; activeId = null; mobileShowingMain = true;
@@ -1027,6 +1053,44 @@
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
     }
 
+    // Copies whatever's CURRENTLY on the canvas into a same-size offscreen
+    // canvas, synchronously — used whenever the canvas needs resizing
+    // mid-session (growing taller while drawing, or a width resync), so it
+    // can be redrawn from exactly what's live right now. That distinction
+    // matters: reloading from the last *saved* image (note.drawing, like
+    // the initial load above does) would silently drop anything drawn
+    // since that save — most importantly the stroke currently in progress,
+    // since both of these resizes can happen mid-stroke by design — and
+    // doing it via an async Image/data-URL round trip (as opposed to a
+    // synchronous canvas-to-canvas drawImage) leaves a brief window where
+    // ink stamped right after the resize gets overwritten the instant the
+    // async reload finally finishes.
+    function snapshotLivePixels(){
+      const temp = document.createElement('canvas');
+      temp.width = canvas.width; temp.height = canvas.height;
+      temp.getContext('2d').drawImage(canvas, 0, 0);
+      return temp;
+    }
+    function resizeLiveCanvas(newCssW, newCssH){
+      const temp = snapshotLivePixels();
+      wrap.style.height = newCssH + 'px';
+      canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
+      canvas.style.height = newCssH + 'px';
+      ctx = canvas.getContext('2d');
+      ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, newCssH);
+      if(predCanvas){
+        predCanvas.width = newCssW * ratio; predCanvas.height = newCssH * ratio;
+        predCanvas.style.height = newCssH + 'px';
+        const pctx2 = predCanvas.getContext('2d');
+        pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
+      }
+      cssH = newCssH;
+      lastCssW = newCssW;
+      note.canvasHeight = newCssH;
+      renderPageSeams(wrap, newCssH);
+    }
+
     // The canvas's internal pixel grid is only recomputed when we
     // explicitly resize it — nothing was re-syncing it if the canvas's
     // on-screen *width* changed afterward (window/orientation change, the
@@ -1042,20 +1106,13 @@
     function resyncWidthIfChanged(){
       const newCssW = wrap.clientWidth;
       if(Math.abs(newCssW - lastCssW) < 1) return;
-      lastCssW = newCssW;
-      const snapshot = canvas.toDataURL('image/png');
-      canvas.width = newCssW * ratio; canvas.height = cssH * ratio;
-      ctx = canvas.getContext('2d');
-      ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      const img = new Image();
-      img.onload = () => ctx.drawImage(img, 0, 0, newCssW, cssH);
-      img.src = snapshot;
-      if(predCanvas){
-        predCanvas.width = newCssW * ratio; predCanvas.height = cssH * ratio;
-        const pctx2 = predCanvas.getContext('2d');
-        pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
-      }
+      resizeLiveCanvas(newCssW, cssH);
     }
+    if(currentCanvasResizeHandler){
+      window.removeEventListener('resize', currentCanvasResizeHandler);
+      window.removeEventListener('orientationchange', currentCanvasResizeHandler);
+    }
+    currentCanvasResizeHandler = resyncWidthIfChanged;
     window.addEventListener('resize', resyncWidthIfChanged);
     window.addEventListener('orientationchange', resyncWidthIfChanged);
     // Also catch it the instant you touch down to draw — cheaper than a
@@ -1068,8 +1125,15 @@
       if(growing) return;
       if(cssH - edgeY < GROW_MARGIN){
         growing = true;
-        const oldH = cssH;
-        ctx = sizeCanvasTo(cssH + GROW_STEP, oldH);
+        resizeLiveCanvas(wrap.clientWidth, cssH + GROW_STEP);
+        // resizeLiveCanvas() recreates the 2D context (canvas.width
+        // reassignment resets it), which silently resets fillStyle/
+        // compositeOperation to their defaults. Restore whatever operation
+        // was actually in progress so an eraser stroke that triggers a
+        // mid-stroke grow doesn't start painting instead of erasing for
+        // the rest of the current batch of points.
+        ctx.globalCompositeOperation = strokeIsErasing ? 'destination-out' : 'source-over';
+        ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
         commitMutation();
         setTimeout(() => { growing = false; }, 30);
       }
@@ -1568,6 +1632,7 @@
       const penBtn = document.getElementById('penBtn');
       const colorPopover = document.getElementById('colorPopover');
       const bgBtn = document.getElementById('bgBtn');
+      const bgPopover = document.getElementById('bgPopover');
       const eraserPopover = document.getElementById('eraserPopover');
 
       penBtn.addEventListener('click', (e) => {
@@ -1644,6 +1709,7 @@
         drawState.eraserPopoverOpen = false;
         renderPage(note);
       });
+      if(bgPopover) bgPopover.addEventListener('click', (e) => e.stopPropagation());
       mainEl.querySelectorAll('[data-bgswatch]').forEach(s => s.addEventListener('click', (e) => {
         e.stopPropagation();
         checkpoint();
@@ -1798,9 +1864,67 @@
   // works fully offline once loaded — the notes themselves are already
   // safe locally in IndexedDB, so this just means the *app* also opens
   // instantly with no connection, the way a real installed app does.
+  //
+  // On top of that: real apps auto-update because an app store actively
+  // checks for and installs new versions for you — a website doesn't get
+  // that for free, so this replicates it by hand:
+  //  1. Actively ask for an update check on every launch (not just wait for
+  //     the browser's own occasional check).
+  //  2. Keep checking every few minutes while the app stays open, in case
+  //     someone leaves it running for a long session.
+  //  3. When a new version actually takes over, reload automatically if
+  //     nothing looks like it's actively being written/drawn right now —
+  //     so most of the time it just quietly updates itself between uses,
+  //     exactly like a native app would. If it can't tell for sure, it
+  //     shows a small "Refresh" banner instead of yanking the page out
+  //     from under an in-progress stroke or sentence.
   if('serviceWorker' in navigator){
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      navigator.serviceWorker.register('./sw.js').then((reg) => {
+        reg.update().catch(() => {});
+        setInterval(() => reg.update().catch(() => {}), 5 * 60 * 1000);
+      }).catch(() => {});
+    });
+
+    let hadController = !!navigator.serviceWorker.controller;
+    let refreshing = false;
+    const updateBanner = document.getElementById('updateBanner');
+    const updateBannerBtn = document.getElementById('updateBannerBtn');
+
+    function looksIdle(){
+      // A drawing note has focus on the canvas itself (not a text field),
+      // so also treat "actively drawing" as active by checking whether a
+      // pointer is currently down isn't tracked globally — the simplest
+      // reliable signal available here is keyboard focus on a text field,
+      // plus whether the tab/app is even in the foreground at all.
+      if(document.visibilityState === 'hidden') return true;
+      const ae = document.activeElement;
+      const isTypingSomewhere = ae && (ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.isContentEditable);
+      return !isTypingSomewhere;
+    }
+
+    function applyUpdateNow(){
+      if(refreshing) return;
+      refreshing = true;
+      window.location.reload();
+    }
+
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if(!hadController){ hadController = true; return; } // first-ever activation, not an "update"
+      if(looksIdle()){
+        applyUpdateNow();
+      } else if(updateBanner){
+        updateBanner.classList.add('show');
+      }
+    });
+
+    if(updateBannerBtn) updateBannerBtn.addEventListener('click', applyUpdateNow);
+
+    // If the banner was shown because something looked active, still catch
+    // the moment it becomes safe to update on its own (app backgrounded,
+    // or focus leaves whatever field was being edited).
+    document.addEventListener('visibilitychange', () => {
+      if(updateBanner && updateBanner.classList.contains('show') && looksIdle()) applyUpdateNow();
     });
   }
 })();
