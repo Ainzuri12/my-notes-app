@@ -269,6 +269,7 @@
   #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:1; }
+  #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:-1; }
   .canvas-shell, .canvas-scroll, .canvas-wrap{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .page-seam{ position:absolute; left:0; right:0; height:1px; background: rgba(128,128,128,0.22); pointer-events:none; }
   .page-seam::after{ content:''; position:absolute; top:1px; left:0; right:0; height:10px; background: linear-gradient(to bottom, rgba(0,0,0,0.12), transparent); }
@@ -284,8 +285,10 @@
   .canvas-float-top .icon-btn:disabled{ opacity:.35; }
 
   .canvas-toolbar{ position:absolute; left:50%; bottom:16px; transform: translateX(-50%); display:flex; align-items:center; gap:4px;
-    background: rgba(20,20,20,0.7); backdrop-filter: blur(8px); border-radius:26px; padding:6px 8px; z-index:5; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
-  .ct-btn{ background:none; border:none; cursor:pointer; color:#e8e8e6; padding:8px 10px 6px 10px; border-radius:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; position:relative; }
+    background: rgba(20,20,20,0.7); backdrop-filter: blur(8px); border-radius:26px; padding:6px 8px; z-index:5; box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    max-width: calc(100% - 24px); overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .canvas-toolbar::-webkit-scrollbar{ display:none; }
+  .ct-btn{ background:none; border:none; cursor:pointer; color:#e8e8e6; padding:8px 10px 6px 10px; border-radius:16px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; position:relative; flex-shrink:0; }
   .ct-btn .ct-label{ font-size:9px; font-weight:600; letter-spacing:.2px; color: rgba(255,255,255,0.75); }
   .ct-btn.active .ct-label{ color:#fff; }
   .ct-btn:hover{ background: rgba(255,255,255,0.15); }
@@ -598,15 +601,48 @@
   function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(persistNotes, 350); }
 
   // ---------- backup / restore to a real file ----------
+  // A plain <a download> link on iOS Safari saves silently to a fixed
+  // Downloads folder with no prompt — you never see where it went or get
+  // to rename it, which is exactly what's confusing here. The fix is the
+  // Web Share API: passing a real File to navigator.share() opens the
+  // native share sheet, and choosing "Save to Files" from there shows
+  // Apple's own folder picker — you see and choose exactly where it's
+  // going. Falls back to a native save-location picker on desktop Chrome/
+  // Edge, and only falls all the way back to a silent download if neither
+  // is available at all.
+  async function saveOrShareFile(blob, filename, mimeType){
+    try{
+      const file = new File([blob], filename, { type: mimeType });
+      if(navigator.canShare && navigator.canShare({ files: [file] })){
+        await navigator.share({ files: [file], title: filename });
+        return;
+      }
+    }catch(err){
+      if(err && err.name === 'AbortError') return; // user backed out of the share sheet — don't also fire a download
+    }
+    if(window.showSaveFilePicker){
+      try{
+        const handle = await window.showSaveFilePicker({ suggestedName: filename });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return;
+      }catch(err){
+        if(err && err.name === 'AbortError') return;
+      }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   function backupToFile(){
     const payload = { app: 'ipad-notes-backup', version: 1, exportedAt: Date.now(), notes, folders };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
     const stamp = new Date().toISOString().slice(0,10);
-    const a = document.createElement('a');
-    a.href = url; a.download = `notes-backup-${stamp}.json`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    saveOrShareFile(blob, `notes-backup-${stamp}.json`, 'application/json');
   }
   function restoreFromFile(file){
     const reader = new FileReader();
@@ -904,8 +940,10 @@
             <button class="icon-btn" id="exportBtn" title="Export">${ICONS.download}</button>
             <div class="menu-pop" id="exportMenu">
               <div class="hint">Export note</div>
-              <button data-export="md">Markdown (.md)</button>
-              <button data-export="txt">Plain text (.txt)</button>
+              ${mode === 'draw'
+                ? `<button data-export="png">Image (.png)</button>`
+                : `<button data-export="md">Markdown (.md)</button>
+                   <button data-export="txt">Plain text (.txt)</button>`}
               <button data-export="pdf">Print / Save as PDF</button>
             </div>
           </div>
@@ -956,6 +994,7 @@
       <div class="canvas-shell">
         <div class="canvas-scroll" id="canvasScroll">
           <div class="canvas-wrap" data-bg="${bg}" id="canvasWrapEl">
+            <canvas id="drawCanvasBg"></canvas>
             <canvas id="drawCanvas"></canvas>
             <canvas id="drawCanvasPredictive"></canvas>
             <div class="eraser-cursor" id="eraserCursor"></div>
@@ -1003,6 +1042,8 @@
           <button class="ct-btn ${drawState.fingerDraw?'active':''}" id="panBtn" title="${drawState.fingerDraw ? 'Finger draws — tap to have one finger scroll instead' : 'One finger scrolls — tap to draw with your finger instead'}">${ICONS.hand}<span class="ct-label">${drawState.fingerDraw ? 'Finger' : 'Scroll'}</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
+          <button class="ct-btn" id="importBtn" title="Import a PDF or image to work on top of">${ICONS.upload}<span class="ct-label">Import</span></button>
+          <input type="file" id="importFileInput" accept="application/pdf,image/*" style="display:none;" />
           <div class="ct-sep"></div>
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
@@ -1053,6 +1094,133 @@
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
     }
 
+    // Imported reference material (a past paper PDF/image you're working
+    // on top of) lives on its own canvas, entirely separate from the ink
+    // above it — via a negative z-index so it sits behind the ink canvas
+    // but in front of the page's own dot/line background. That separation
+    // matters: erasing or clearing ink never touches it, and note.drawing
+    // (the ink layer's own saved PNG) stays just the ink, nothing baked
+    // in — the two are only composited together at export time.
+    const bgCanvas = document.getElementById('drawCanvasBg');
+    const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
+    const bgImageCache = new Map(); // src -> decoded Image, so repeated resizes don't re-decode every page every time
+    function loadBgImage(src){
+      if(bgImageCache.has(src)) return Promise.resolve(bgImageCache.get(src));
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => { bgImageCache.set(src, img); resolve(img); };
+        img.onerror = () => resolve(null);
+        img.src = src;
+      });
+    }
+    function bgContentHeight(cssW){
+      return (note.bgPages || []).reduce((sum, p) => sum + (p.naturalH / p.naturalW) * cssW, 0);
+    }
+    async function renderBgLayer(cssWNow, cssHNow){
+      if(!bgCanvas || !bgCtx) return;
+      bgCanvas.width = cssWNow * ratio; bgCanvas.height = cssHNow * ratio;
+      bgCanvas.style.height = cssHNow + 'px';
+      bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      bgCtx.clearRect(0, 0, cssWNow, cssHNow);
+      let y = 0;
+      for(const page of (note.bgPages || [])){
+        const h = (page.naturalH / page.naturalW) * cssWNow;
+        const img = await loadBgImage(page.src);
+        if(img) bgCtx.drawImage(img, 0, y, cssWNow, h);
+        y += h;
+      }
+    }
+    renderBgLayer(wrap.clientWidth, cssH);
+
+    // Importing a PDF/image (a past paper, a worksheet, etc.) turns each
+    // page into a background reference page you can draw on top of — the
+    // canvas grows to fit if the imported content is taller than what's
+    // there already.
+    function fileToDataUrl(file){
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+    function naturalSizeOf(src){
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 });
+        img.onerror = () => resolve({ w: 1, h: 1 });
+        img.src = src;
+      });
+    }
+    let pdfJsLoadPromise = null;
+    function ensurePdfJsLoaded(){
+      if(window.pdfjsLib) return Promise.resolve();
+      if(pdfJsLoadPromise) return pdfJsLoadPromise;
+      pdfJsLoadPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+        script.onload = () => {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+          resolve();
+        };
+        script.onerror = () => reject(new Error('Could not load PDF support'));
+        document.head.appendChild(script);
+      });
+      return pdfJsLoadPromise;
+    }
+    async function importFileAsBackground(file){
+      const cssW = wrap.clientWidth;
+      const newPages = [];
+      try{
+        if(file.type === 'application/pdf'){
+          await ensurePdfJsLoaded();
+          const buf = await file.arrayBuffer();
+          const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+          for(let i = 1; i <= pdf.numPages; i++){
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
+            const off = document.createElement('canvas');
+            off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
+            await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
+            newPages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
+          }
+        } else if(file.type.startsWith('image/')){
+          const src = await fileToDataUrl(file);
+          const dims = await naturalSizeOf(src);
+          newPages.push({ src, naturalW: dims.w, naturalH: dims.h });
+        } else {
+          alert('Please choose a PDF or image file.');
+          return;
+        }
+      }catch(err){
+        console.error('Import failed', err);
+        alert('Could not import that file.');
+        return;
+      }
+
+      checkpoint();
+      note.bgPages = (note.bgPages || []).concat(newPages);
+      const neededH = Math.max(cssH, bgContentHeight(cssW), DEFAULT_CANVAS_HEIGHT);
+      if(neededH !== cssH){
+        resizeLiveCanvas(cssW, neededH); // already re-renders the bg layer with the updated pages
+      } else {
+        await renderBgLayer(cssW, cssH);
+      }
+      note.updatedAt = Date.now();
+      commitMutation();
+    }
+    const importBtn = document.getElementById('importBtn');
+    const importFileInput = document.getElementById('importFileInput');
+    if(importBtn && importFileInput){
+      importBtn.addEventListener('click', (e) => { e.stopPropagation(); importFileInput.click(); });
+      importFileInput.addEventListener('click', (e) => e.stopPropagation());
+      importFileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        importFileInput.value = '';
+        if(file) await importFileAsBackground(file);
+      });
+    }
+
     // Copies whatever's CURRENTLY on the canvas into a same-size offscreen
     // canvas, synchronously — used whenever the canvas needs resizing
     // mid-session (growing taller while drawing, or a width resync), so it
@@ -1089,6 +1257,7 @@
       lastCssW = newCssW;
       note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
+      renderBgLayer(newCssW, newCssH);
     }
 
     // The canvas's internal pixel grid is only recomputed when we
@@ -1728,8 +1897,19 @@
 
       document.getElementById('clearCanvasBtn').addEventListener('click', (e) => {
         e.stopPropagation();
-        if(!confirm('Clear this drawing?')) return;
-        checkpoint(); note.drawing = null; note.canvasHeight = DEFAULT_CANVAS_HEIGHT; note.updatedAt = Date.now(); commitMutation(); renderPage(note);
+        const hasBg = (note.bgPages || []).length > 0;
+        if(!confirm(hasBg ? 'Clear your drawing? The imported page(s) underneath will stay.' : 'Clear this drawing?')) return;
+        checkpoint();
+        note.drawing = null;
+        if(hasBg){
+          const wrapEl = document.getElementById('canvasWrapEl');
+          const cssW = wrapEl ? wrapEl.clientWidth : 0;
+          const bgH = note.bgPages.reduce((sum, p) => sum + (p.naturalH / p.naturalW) * cssW, 0);
+          note.canvasHeight = Math.max(DEFAULT_CANVAS_HEIGHT, bgH);
+        } else {
+          note.canvasHeight = DEFAULT_CANVAS_HEIGHT;
+        }
+        note.updatedAt = Date.now(); commitMutation(); renderPage(note);
       });
     } else if(!previewMode){
       const bodyInput = document.getElementById('bodyInput');
@@ -1744,9 +1924,11 @@
     if(kind === 'md' || kind === 'txt'){
       const content = kind === 'md' ? `# ${note.title || 'Untitled'}\n\n${note.body || ''}` : `${note.title || 'Untitled'}\n\n${note.body || ''}`;
       const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = `${safeTitle}.${kind}`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      saveOrShareFile(blob, `${safeTitle}.${kind}`, 'text/plain');
+    } else if(kind === 'png'){
+      compositeDrawingPng(note).then(blob => {
+        if(blob) saveOrShareFile(blob, `${safeTitle}.png`, 'image/png');
+      });
     } else if(kind === 'pdf'){
       const printArea = document.getElementById('printArea');
       const bodyHtml = note.mode === 'draw' && note.drawing
@@ -1755,6 +1937,50 @@
       printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1>${bodyHtml}`;
       window.print();
     }
+  }
+
+  // Flattens a drawing note into a single PNG: any imported background
+  // reference pages (a past paper, etc.) first, then the ink on top —
+  // matching exactly what's on screen, since those live on separate layers
+  // while editing (see importFileAsBackground) so erasing/clearing ink
+  // never touches the imported reference material.
+  function compositeDrawingPng(note){
+    return new Promise((resolve) => {
+      const w = 1000; // export at a fixed reference width; height follows content
+      const bgPages = note.bgPages || [];
+      const bgH = bgPages.reduce((sum, p) => sum + (p.naturalH / p.naturalW) * w, 0);
+      const h = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, bgH, 1);
+      const out = document.createElement('canvas');
+      out.width = w; out.height = h;
+      const octx = out.getContext('2d');
+      const bgStyle = { 'dark-dot':'#1c1c1e', 'light-dot':'#ffffff', 'black':'#000000', 'white':'#ffffff', 'cream':'#f5efe0' }[note.canvasBg || 'dark-dot'] || '#1c1c1e';
+      octx.fillStyle = bgStyle;
+      octx.fillRect(0, 0, w, h);
+
+      function loadImg(src){
+        return new Promise((res) => {
+          const img = new Image();
+          img.onload = () => res(img);
+          img.onerror = () => res(null);
+          img.src = src;
+        });
+      }
+
+      (async () => {
+        let y = 0;
+        for(const page of bgPages){
+          const img = await loadImg(page.src);
+          const pageH = (page.naturalH / page.naturalW) * w;
+          if(img) octx.drawImage(img, 0, y, w, pageH);
+          y += pageH;
+        }
+        if(note.drawing){
+          const inkImg = await loadImg(note.drawing);
+          if(inkImg) octx.drawImage(inkImg, 0, 0, w, h);
+        }
+        out.toBlob((blob) => resolve(blob), 'image/png');
+      })();
+    });
   }
 
   // ---------- new note / folder ----------
