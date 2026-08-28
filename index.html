@@ -743,7 +743,21 @@
   }
 
   // ---------- undo/redo ----------
-  function checkpoint(){ if(checkpointed) return; undoStack.push(clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
+  // Like clone(), but only deep-copies the ONE note being mutated (by id)
+  // and shallow-copies every other note by reference. Plain clone(notes)
+  // JSON-round-trips the entire notes array every time — including every
+  // other note's full-resolution ink PNG — even though a single pen
+  // stroke only ever touches the note it was drawn on. On a notebook with
+  // any real amount of ink in it, re-serializing all of that on every
+  // single stroke lift is exactly what made writing feel laggy: a synchronous
+  // multi-MB JSON.stringify/parse landing right as you lift the pen for the
+  // next stroke. Passing noteId lets the hot path (drawing) skip that cost;
+  // omitting it keeps the safe, general behavior for rarer, non-hot-path
+  // mutations (trashing/pinning/moving a note from a list, etc.).
+  function snapshotNotesExcept(noteId){
+    return notes.map(n => (n.id === noteId ? clone(n) : n));
+  }
+  function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
   function commitMutation(){ checkpointed=false; scheduleSave(); }
   function doUndo(){ if(!undoStack.length) return; redoStack.push(clone(notes)); notes=undoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
   function doRedo(){ if(!redoStack.length) return; undoStack.push(clone(notes)); notes=redoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
@@ -1529,7 +1543,7 @@
     function hideEraserCursor(){ if(eraserCursor) eraserCursor.classList.remove('show'); }
 
     function saveDrawing(){
-      checkpoint();
+      checkpoint(note.id);
       note.drawing = canvas.toDataURL('image/png');
       note.updatedAt = Date.now();
       commitMutation();
@@ -1778,10 +1792,25 @@
           // Flatten the whole overlay stroke onto the page in one pass at
           // highlighter opacity, so overlaps within the stroke stay even.
           if(predCanvas && strokePts.length){
+            // ctx is always left with ctx.scale(ratio, ratio) applied (set
+            // in sizeCanvasTo/resizeLiveCanvas so every other draw call can
+            // work in plain CSS-pixel coordinates). canvas.width/height are
+            // DEVICE-pixel dimensions (cssW*ratio), though, so passing them
+            // straight to drawImage as the destination size — while that
+            // ratio scale is still active — scaled the flattened highlighter
+            // image by devicePixelRatio a second time. On any HiDPI screen
+            // (ratio > 1, i.e. virtually every phone/tablet) that stretched
+            // and shifted the highlighter mark away from the actual pen
+            // path the moment you lifted the pen. predCanvas is already
+            // pixel-for-pixel aligned with canvas in device pixels, so draw
+            // it 1:1 with the transform reset rather than going through the
+            // CSS-scaled coordinate system at all.
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.globalCompositeOperation = 'source-over';
             ctx.globalAlpha = HIGHLIGHTER_ALPHA;
-            ctx.drawImage(predCanvas, 0, 0, canvas.width, canvas.height);
-            ctx.globalAlpha = 1;
+            ctx.drawImage(predCanvas, 0, 0);
+            ctx.restore();
           }
           strokeIsHighlighter = false;
           setPredictiveOpacity();
