@@ -452,6 +452,34 @@
     align-items:center; justify-content:center; color: var(--text); }
   .create-card .create-plus svg{ width:22px; height:22px; }
   .create-card:hover .create-thumb{ border-color: var(--accent); }
+
+  /* ---------- Freenotes editor ---------- */
+  .workspace > .main{ flex: 1 1 auto; min-height: 0; }
+  .canvas-wrap[data-bg="grid"]{ background-color:#ffffff;
+    background-image: linear-gradient(rgba(0,0,0,0.09) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.09) 1px, transparent 1px);
+    background-size: 26px 26px; }
+  .bg-swatch[data-bgswatch="grid"]{ background-color:#ffffff;
+    background-image: linear-gradient(rgba(0,0,0,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.35) 1px, transparent 1px);
+    background-size: 7px 7px; }
+
+  .topbar{ padding: calc(12px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 0 16px; }
+  .topbar-left, .topbar-right{ background: rgba(28,28,31,0.92); backdrop-filter: blur(12px);
+    border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; }
+  .topbar-right{ gap: 2px; }
+  .close-editor{ border-radius: 999px; }
+  .mode-pill{ background: rgba(255,255,255,0.06); border-radius: 999px; }
+  .mode-pill button{ border-radius: 999px; }
+
+  .page-wrap.draw-wrap{ padding: 8px 16px 14px 16px; }
+  .canvas-shell{ border-radius: 20px; border: 1px solid var(--border); box-shadow: 0 18px 50px rgba(0,0,0,0.55); }
+  .canvas-toolbar{ bottom: 20px; background: rgba(24,24,27,0.94); backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 6px; gap: 4px;
+    box-shadow: 0 14px 34px rgba(0,0,0,0.5); }
+  .canvas-toolbar .ct-btn{ border-radius: 999px; }
+  .canvas-float-top{ background: rgba(24,24,27,0.9); backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 4px; }
+  .swatch-popover, .eraser-popover, .bg-popover{ border-radius: 18px; }
+  .stylus-hint{ opacity:.6; }
 </style>
 
 
@@ -538,7 +566,7 @@
 (function(){
   const ICON_CYCLE = ['📄','📝','🗒️','📋','🖊️','✏️','📑','💡','📚','🔖','🗂️','🎯','✅','🌱','🔥','⭐'];
   const INK_COLORS = ['#ffffff', '#000000', '#eb5757', '#f5a623', '#f7d34c', '#0f9d58', '#2383e2', '#9b59e0', '#ff7ab8'];
-  const BG_OPTIONS = ['dark-dot', 'light-dot', 'black', 'white', 'cream'];
+  const BG_OPTIONS = ['grid', 'light-dot', 'white', 'cream', 'dark-dot', 'black'];
   const FOLDER_COLORS = ['#ff5a5f','#ff9f43','#ffd23f','#4ade80','#38bdf8','#818cf8','#c084fc','#f472b6'];
   const DEFAULT_CANVAS_HEIGHT = 1400;
   const GROW_STEP = 800;
@@ -591,8 +619,8 @@
   const HIGHLIGHTER_ALPHA = 0.32;
   let drawState = {
     tool: 'pen',
-    tools: { pen: { size: 6, color: '#ffffff' }, marker: { size: 14, color: '#eb5757' }, highlighter: { size: 28, color: '#f7d34c' } },
-    color: '#ffffff', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false,
+    tools: { pen: { size: 6, color: '#1b1b1f' }, marker: { size: 14, color: '#eb5757' }, highlighter: { size: 28, color: '#f7d34c' } },
+    color: '#1b1b1f', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false,
     eraserPopoverOpen: false, fingerDraw: false, eraserSize: 18, penSize: 6,
     wheelLight: 50,
   };
@@ -968,7 +996,7 @@
       if(n.drawing){
         return `<div class="card-thumb"><img src="${n.drawing}" alt="" /></div>`;
       }
-      const bg = n.canvasBg || 'dark-dot';
+      const bg = n.canvasBg || 'grid';
       const bgColor = {'dark-dot':'#1c1c1e','light-dot':'#ffffff','black':'#000000','white':'#ffffff','cream':'#f5efe0'}[bg] || '#1c1c1e';
       return `<div class="card-thumb" style="background:${bgColor};"><div class="draw-empty">${ICONS.pen}</div></div>`;
     }
@@ -1188,7 +1216,7 @@
   }
 
   function renderDrawUI(note){
-    const bg = note.canvasBg || 'dark-dot';
+    const bg = note.canvasBg || 'grid';
     return `
       <div class="canvas-shell">
         <div class="canvas-scroll" id="canvasScroll">
@@ -2206,7 +2234,7 @@
         e.stopPropagation();
         checkpoint();
         const chosen = s.dataset.bgswatch;
-        const wasDark = ['dark-dot','black'].includes(note.canvasBg || 'dark-dot');
+        const wasDark = ['dark-dot','black'].includes(note.canvasBg || 'grid');
         const nowDark = ['dark-dot','black'].includes(chosen);
         if(wasDark !== nowDark){
           if(drawState.color === '#ffffff' && nowDark === false) drawState.color = '#000000';
@@ -2276,7 +2304,7 @@
       const out = document.createElement('canvas');
       out.width = w; out.height = h;
       const octx = out.getContext('2d');
-      const bgStyle = { 'dark-dot':'#1c1c1e', 'light-dot':'#ffffff', 'black':'#000000', 'white':'#ffffff', 'cream':'#f5efe0' }[note.canvasBg || 'dark-dot'] || '#1c1c1e';
+      const bgStyle = { 'grid':'#ffffff', 'dark-dot':'#1c1c1e', 'light-dot':'#ffffff', 'black':'#000000', 'white':'#ffffff', 'cream':'#f5efe0' }[note.canvasBg || 'grid'] || '#ffffff';
       octx.fillStyle = bgStyle;
       octx.fillRect(0, 0, w, h);
 
@@ -2310,7 +2338,7 @@
   function createNote(folderId){
     checkpoint();
     const note = {
-      id: uid(), title: '', body: '', mode: 'text', drawing: null, canvasBg: 'dark-dot', canvasHeight: DEFAULT_CANVAS_HEIGHT,
+      id: uid(), title: '', body: '', mode: 'text', drawing: null, canvasBg: 'grid', canvasHeight: DEFAULT_CANVAS_HEIGHT,
       icon: ICON_CYCLE[0], tags: [], folderId: folderId || null,
       pinned: false, trashed: false, trashedAt: null,
       createdAt: Date.now(), updatedAt: Date.now(),
