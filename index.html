@@ -1333,6 +1333,13 @@
     const mode = note.mode || 'text';
     const selFolder = folderById(note.folderId);
 
+    // Re-rendering rebuilds the whole editor DOM, which would reset scroll
+    // to the top. Capture the scroll position first and restore it after
+    // the new DOM is wired up (see bottom of this function).
+    const prevCanvasScroll = document.getElementById('canvasScroll')?.scrollTop ?? null;
+    const prevPageScroll = mainEl.querySelector('.page-scroll:not(.draw-scroll)')?.scrollTop ?? null;
+
+
     mainEl.innerHTML = `
       <button class="mobile-back" id="backBtn">${ICONS.back}Menu</button>
       <div class="topbar">
@@ -1399,6 +1406,15 @@
     `;
     mainEl.classList.toggle('show-mobile', mobileShowingMain);
     wirePage(note, mode);
+
+    // Restore scroll position captured before the rebuild.
+    if(mode === 'draw' && prevCanvasScroll !== null){
+      const sc = document.getElementById('canvasScroll');
+      if(sc) requestAnimationFrame(() => { sc.scrollTop = prevCanvasScroll; });
+    } else if(prevPageScroll !== null){
+      const ps = mainEl.querySelector('.page-scroll');
+      if(ps) ps.scrollTop = prevPageScroll;
+    }
   }
 
   // The Template sheet: pick a page template, paper colour, line colour and
@@ -2566,8 +2582,8 @@
 
     canvasApi = { deleteSelection: lassoDeleteSelection, dropSelection: lassoDropSelection };
 
-    // resume scroll position near where they left off (bottom of drawn content) on first open
-    if(note.drawing) requestAnimationFrame(() => { scrollEl.scrollTop = 0; });
+    // Scroll position is preserved by renderPage across re-renders; on first
+    // open the page starts at the top.
   }
 
   function renderPageSeams(wrap, totalHeight){
