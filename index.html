@@ -2992,9 +2992,18 @@
     if(fpm && folderPickerOpen){ folderPickerOpen = false; fpm.classList.remove('show'); }
     if(drawState.colorPopoverOpen || drawState.bgPopoverOpen || drawState.eraserPopoverOpen || drawState.lassoPopoverOpen){
       drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false; drawState.eraserPopoverOpen = false; drawState.lassoPopoverOpen = false;
-      const note = notes.find(n => n.id === activeId);
-      if(note && (note.mode||'text') === 'draw') renderPage(note);
+      // Close the popovers by touching only their own class — NOT by
+      // re-rendering the page. renderPage() rebuilds the canvas elements from
+      // the saved PNG, which throws away all live canvas state: most visibly a
+      // lifted lasso selection (its ink is already erased from the page, so
+      // the selection was silently deleted the moment you started the lasso
+      // stroke, because that same tap closed the lasso popover).
+      ['colorPopover','bgPopover','eraserPopover','lassoPopover'].forEach(id => {
+        const el = document.getElementById(id);
+        if(el) el.classList.remove('show');
+      });
     }
+
   });
 
   window.addEventListener('keydown', (e) => {
