@@ -1934,38 +1934,131 @@
     // in — the two are only composited together at export time.
     const bgCanvas = document.getElementById('drawCanvasBg');
     const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
-    const bgImageCache = new Map(); // src -> decoded Image, so repeated resizes don't re-decode every page every time
+
+    // The background layer is VIRTUALISED. A 40-page PDF at ~1400px wide is
+    // far too much bitmap to hold in one full-document canvas (iPadOS simply
+    // drops the canvas past a few thousand pixels tall, and decoding every
+    // page at once is what made importing stall the UI). Instead the bg
+    // canvas is only as tall as the viewport (plus a screen of overscan),
+    // absolutely positioned and moved with the scroll position, and only the
+    // pages that actually intersect that window are decoded and drawn. Page
+    // count is therefore effectively unlimited.
+    const BG_CACHE_MAX = 8;                 // decoded pages kept in memory (LRU)
+    const bgImageCache = new Map();         // src -> decoded Image, most-recent last
+    const bgPending = new Map();            // src -> in-flight decode promise
+    function bgCacheGet(src){
+      if(!bgImageCache.has(src)) return null;
+      const img = bgImageCache.get(src);
+      bgImageCache.delete(src); bgImageCache.set(src, img); // refresh recency
+      return img;
+    }
+    function bgCachePut(src, img){
+      bgImageCache.set(src, img);
+      while(bgImageCache.size > BG_CACHE_MAX){
+        const oldest = bgImageCache.keys().next().value;
+        bgImageCache.delete(oldest); // drop the off-screen bitmap; it re-decodes if scrolled back to
+      }
+    }
     function loadBgImage(src){
-      if(bgImageCache.has(src)) return Promise.resolve(bgImageCache.get(src));
-      return new Promise((resolve) => {
+      const hit = bgCacheGet(src);
+      if(hit) return Promise.resolve(hit);
+      if(bgPending.has(src)) return bgPending.get(src);
+      const p = new Promise((resolve) => {
         const img = new Image();
-        img.onload = () => { bgImageCache.set(src, img); resolve(img); };
-        img.onerror = () => resolve(null);
+        img.decoding = 'async';
+        img.onload = () => { bgCachePut(src, img); bgPending.delete(src); resolve(img); };
+        img.onerror = () => { bgPending.delete(src); resolve(null); };
         img.src = src;
       });
+      bgPending.set(src, p);
+      return p;
+    }
+    function bgPageLayout(cssW){
+      const out = [];
+      let y = 0;
+      for(const p of (note.bgPages || [])){
+        if(!p.naturalW || !p.naturalH) continue;
+        const h = (p.naturalH / p.naturalW) * cssW;
+        out.push({ page: p, y, h });
+        y += h;
+      }
+      return out;
     }
     function bgContentHeight(cssW){
       return (note.bgPages || []).reduce((sum, p) => sum + (p.naturalH / p.naturalW) * cssW, 0);
     }
-    async function renderBgLayer(cssWNow, cssHNow){
+
+    let bgW = wrap.clientWidth;
+    let bgDocH = cssH;
+    let bgFrame = 0;
+    let bgLastKey = '';
+    function scheduleBgDraw(force){
+      if(force) bgLastKey = '';
+      if(bgFrame) return;
+      bgFrame = requestAnimationFrame(() => { bgFrame = 0; drawBgViewport(); });
+    }
+    function drawBgViewport(){
       if(!bgCanvas || !bgCtx) return;
-      bgCanvas.width = cssWNow * ratio; bgCanvas.height = cssHNow * ratio;
-      bgCanvas.style.height = cssHNow + 'px';
+      const cssW = bgW;
+      const pages = bgPageLayout(cssW);
+      if(!pages.length){
+        bgCanvas.width = 0; bgCanvas.height = 0;
+        bgLastKey = 'empty';
+        return;
+      }
+      const viewH = Math.max(1, scrollEl ? scrollEl.clientHeight : bgDocH);
+      const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+      const overscan = viewH;                       // a screen of slack above and below
+      const top = Math.max(0, Math.round(scrollTop - overscan));
+      const bottom = Math.min(bgDocH, Math.round(scrollTop + viewH + overscan));
+      const height = Math.max(1, bottom - top);
+      const key = cssW + '|' + top + '|' + height + '|' + pages.length;
+
+      // Reallocating the canvas on every scroll frame is expensive, so only
+      // resize when the window's dimensions actually change; otherwise just
+      // move it and repaint.
+      if(bgCanvas.width !== Math.round(cssW * ratio) || bgCanvas.height !== Math.round(height * ratio)){
+        bgCanvas.width = Math.round(cssW * ratio);
+        bgCanvas.height = Math.round(height * ratio);
+        bgCanvas.style.width = cssW + 'px';
+        bgCanvas.style.height = height + 'px';
+      }
+      bgCanvas.style.transform = 'translateY(' + top + 'px)';
       bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      bgCtx.clearRect(0, 0, cssWNow, cssHNow);
-      const pages = note.bgPages || [];
-      // Decode every imported page immediately and in parallel. Loading one
-      // page at a time made long PDFs appear only as the user scrolled down.
-      const images = await Promise.all(pages.map(page => loadBgImage(page.src)));
-      let y = 0;
-      for(let index = 0; index < pages.length; index++){
-        const page = pages[index];
-        const h = (page.naturalH / page.naturalW) * cssWNow;
-        const img = images[index];
-        if(img) bgCtx.drawImage(img, 0, y, cssWNow, h);
-        y += h;
+      bgCtx.clearRect(0, 0, cssW, height);
+      bgCtx.translate(0, -top);
+
+      const missing = [];
+      for(const entry of pages){
+        if(entry.y + entry.h <= top || entry.y >= bottom) continue;   // outside the window
+        const img = bgCacheGet(entry.page.src);
+        if(img){
+          bgCtx.drawImage(img, 0, entry.y, cssW, entry.h);
+        } else {
+          missing.push(entry.page.src);
+        }
+      }
+      bgLastKey = key;
+
+      // Anything not decoded yet is fetched off the critical path; when it
+      // lands we repaint (only if the viewport hasn't moved on since).
+      if(missing.length){
+        const pendingKey = key;
+        missing.forEach((src) => {
+          loadBgImage(src).then((img) => {
+            if(img && bgLastKey === pendingKey) scheduleBgDraw(true);
+          });
+        });
       }
     }
+    // Kept for the existing call sites: they tell us the document's current
+    // size, the virtualiser works out what to actually paint.
+    function renderBgLayer(cssWNow, cssHNow){
+      bgW = cssWNow;
+      bgDocH = Math.max(cssHNow, bgContentHeight(cssWNow));
+      scheduleBgDraw(true);
+    }
+    if(scrollEl) scrollEl.addEventListener('scroll', () => scheduleBgDraw(), { passive: true });
     renderBgLayer(wrap.clientWidth, cssH);
 
     // Importing a PDF/image (a past paper, a worksheet, etc.) turns each
