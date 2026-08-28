@@ -462,6 +462,50 @@
     background-image: linear-gradient(rgba(0,0,0,0.35) 1px, transparent 1px), linear-gradient(90deg, rgba(0,0,0,0.35) 1px, transparent 1px);
     background-size: 7px 7px; }
 
+
+  /* ---------- Template (paper) modal ---------- */
+  .tpl-overlay{ position:fixed; inset:0; background: rgba(0,0,0,0.45); z-index:60; display:flex;
+    align-items:flex-start; justify-content:center; padding: 6vh 16px; }
+  .tpl-modal{ width:min(700px, 100%); max-height:82vh; display:flex; flex-direction:column;
+    background: rgba(30,30,32,0.98); backdrop-filter: blur(20px); border-radius:20px; overflow:hidden;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.55); color:#f2f2f4; }
+  .tpl-head{ display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:14px 16px; border-bottom:1px solid rgba(255,255,255,0.08); flex:0 0 auto; }
+  .tpl-head h3{ margin:0; font-size:16px; font-weight:600; }
+  .tpl-btn{ background: rgba(255,255,255,0.08); border:none; color:#f2f2f4; font-size:14px;
+    padding:8px 16px; border-radius:999px; cursor:pointer; }
+  .tpl-btn.primary{ background: rgba(255,255,255,0.22); font-weight:600; }
+  .tpl-btn:hover{ background: rgba(255,255,255,0.16); }
+  .tpl-body{ overflow-y:auto; padding: 16px; display:flex; flex-direction:column; gap:22px; }
+  .tpl-current{ display:flex; gap:18px; align-items:flex-start; }
+  .tpl-current .tpl-card{ background: rgba(255,255,255,0.05); border-radius:14px; padding:12px; }
+  .tpl-rows{ flex:1; background: rgba(255,255,255,0.05); border-radius:14px; padding: 4px 14px; }
+  .tpl-row{ display:flex; align-items:center; justify-content:space-between; padding:12px 0; font-size:14px; }
+  .tpl-row + .tpl-row{ border-top:1px solid rgba(255,255,255,0.08); }
+  .tpl-row select{ background:transparent; border:none; color:#f2f2f4; font-size:14px; text-align:right; cursor:pointer; }
+  .tpl-row select option{ color:#111; }
+  .tpl-sec-title{ font-size:15px; font-weight:700; margin: 0 0 12px; }
+  .tpl-grid{ display:grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap:16px; }
+  .tpl-card{ cursor:pointer; text-align:center; }
+  .tpl-prev{ width:100%; aspect-ratio: 3/4; border-radius:6px; border:2px solid transparent;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.4); position:relative; overflow:hidden; }
+  .tpl-card.selected .tpl-prev{ border-color:#fff; }
+  .tpl-card.selected .tpl-prev::after{ content:'✓'; position:absolute; bottom:6px; left:50%; transform:translateX(-50%);
+    width:20px; height:20px; border-radius:50%; background: rgba(60,60,60,0.75); color:#fff; font-size:12px;
+    display:flex; align-items:center; justify-content:center; }
+  .tpl-name{ margin-top:8px; font-size:12.5px; color:#e6e6ea; }
+  .tpl-opts{ display:grid; grid-template-columns: 1fr 1fr 1.2fr; gap:20px; align-items:center; }
+  @media (max-width:560px){ .tpl-opts{ grid-template-columns:1fr; } .tpl-current{ flex-direction:column; } }
+  .tpl-opt-label{ font-size:12.5px; color:#9b9ba1; margin-bottom:10px; display:flex; justify-content:space-between; }
+  .tpl-dots{ display:flex; gap:12px; align-items:center; }
+  .tpl-dot{ width:22px; height:22px; border-radius:50%; cursor:pointer; border:2px solid transparent;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.25) inset; }
+  .tpl-dot.selected{ border-color:#fff; }
+  .tpl-dot input[type=color]{ opacity:0; width:100%; height:100%; cursor:pointer; }
+  .tpl-dot.add{ background: rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
+  .tpl-dot.add::before{ content:'+'; position:absolute; color:#fff; font-size:15px; pointer-events:none; }
+  .tpl-opts input[type=range]{ width:100%; accent-color:#fff; }
+
   .topbar{ padding: calc(12px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 0 16px; }
   .topbar-left, .topbar-right{ background: rgba(28,28,31,0.92); backdrop-filter: blur(12px);
     border: 1px solid var(--border); border-radius: 999px; padding: 5px 8px; }
@@ -567,6 +611,95 @@
   const ICON_CYCLE = ['📄','📝','🗒️','📋','🖊️','✏️','📑','💡','📚','🔖','🗂️','🎯','✅','🌱','🔥','⭐'];
   const INK_COLORS = ['#ffffff', '#000000', '#eb5757', '#f5a623', '#f7d34c', '#0f9d58', '#2383e2', '#9b59e0', '#ff7ab8'];
   const BG_OPTIONS = ['grid', 'light-dot', 'white', 'cream', 'dark-dot', 'black'];
+  const PAPER_TEMPLATES = [
+    { id:'plain',        name:'Plain',        group:'Basic Templates' },
+    { id:'rule',         name:'Rule',         group:'Basic Templates' },
+    { id:'grid',         name:'Grid',         group:'Basic Templates' },
+    { id:'dot',          name:'Dot',          group:'Basic Templates' },
+    { id:'cornell-rule', name:'Cornell Rule', group:'Education' },
+    { id:'cornell-grid', name:'Cornell grid', group:'Education' },
+    { id:'mckinsey',     name:'McKinsey',     group:'Education' },
+    { id:'staff',        name:'Staff',        group:'Education' },
+  ];
+  const PAPER_COLORS = ['#ffffff', '#f7f1e1', '#2c2c2e', '#000000'];
+  const PAPER_LINE_COLORS = ['#9aa0a6', '#5b9cf6', '#e2564a', '#111111'];
+  const LEGACY_BG = {
+    'grid':      { template:'grid',  paperColor:'#ffffff' },
+    'light-dot': { template:'dot',   paperColor:'#ffffff' },
+    'white':     { template:'plain', paperColor:'#ffffff' },
+    'cream':     { template:'rule',  paperColor:'#f5efe0' },
+    'dark-dot':  { template:'dot',   paperColor:'#1c1c1e', lineColor:'#8a8a8e' },
+    'black':     { template:'plain', paperColor:'#000000', lineColor:'#8a8a8e' },
+  };
+  // Every note carries a paper description: which template (plain/rule/grid/
+  // dot/cornell/…), the sheet colour, the rule colour and the line spacing.
+  // Older notes only stored a canvasBg keyword, so migrate those on read.
+  function getPaper(note){
+    if(!note.paper){
+      const l = LEGACY_BG[note.canvasBg || 'grid'] || LEGACY_BG.grid;
+      note.paper = { template: l.template, paperColor: l.paperColor, lineColor: l.lineColor || '#9aa0a6', spacing: 5, direction: 'Vertical', size: 'A4' };
+    }
+    const p = note.paper;
+    return {
+      template: p.template || 'grid',
+      paperColor: p.paperColor || '#ffffff',
+      lineColor: p.lineColor || '#9aa0a6',
+      spacing: (p.spacing == null ? 5 : p.spacing),
+      direction: p.direction || 'Vertical',
+      size: p.size || 'A4',
+    };
+  }
+  function hexRgba(hex, a){
+    let h = String(hex || '#000000').replace('#','');
+    if(h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16) || 0;
+    return `rgba(${(n>>16)&255}, ${(n>>8)&255}, ${n&255}, ${a})`;
+  }
+  function isDarkPaper(hex){
+    let h = String(hex || '#ffffff').replace('#','');
+    if(h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16) || 0;
+    const lum = (0.299*((n>>16)&255) + 0.587*((n>>8)&255) + 0.114*(n&255)) / 255;
+    return lum < 0.45;
+  }
+  // Build the CSS background layers for a paper description. `unit` lets the
+  // little modal previews draw the same template at a smaller scale.
+  function paperStyle(paper, unit){
+    const u = unit || (6 + paper.spacing * 4);
+    const c = hexRgba(paper.lineColor, 0.5);
+    const cs = hexRgba(paper.lineColor, 1);
+    const imgs = [], sizes = [], reps = [];
+    const push = (img, size, rep) => { imgs.push(img); sizes.push(size); reps.push(rep || 'repeat'); };
+    const hline = () => push(`repeating-linear-gradient(to bottom, ${c} 0 1px, transparent 1px ${u}px)`, `100% ${u}px`);
+    const vline = () => push(`repeating-linear-gradient(to right, ${c} 0 1px, transparent 1px ${u}px)`, `${u}px 100%`);
+    const dots  = () => push(`radial-gradient(circle, ${c} ${Math.max(1, u*0.045)}px, transparent ${Math.max(1.4, u*0.065)}px)`, `${u}px ${u}px`);
+    const guide = (pos, dir) => push(
+      `linear-gradient(${dir === 'v' ? '90deg' : '180deg'}, transparent 0 calc(${pos} - 2px), ${cs} calc(${pos} - 2px) ${pos}, transparent ${pos} 100%)`,
+      '100% 100%', 'no-repeat');
+    const staff = () => {
+      const s = Math.max(4, Math.round(u * 0.42));
+      const period = 4 * s + 1 + Math.round(u * 3);
+      const stops = [];
+      for(let i = 0; i < 5; i++){
+        stops.push(`transparent ${i*s}px`, `${c} ${i*s}px`, `${c} ${i*s+1}px`, `transparent ${i*s+1}px`);
+      }
+      push(`linear-gradient(to bottom, ${stops.join(', ')}, transparent ${period}px)`, `100% ${period}px`);
+    };
+    switch(paper.template){
+      case 'plain': break;
+      case 'rule': hline(); break;
+      case 'dot': dots(); break;
+      case 'cornell-rule': guide('25%','v'); guide('82%','h'); hline(); break;
+      case 'cornell-grid': guide('25%','v'); guide('82%','h'); hline(); vline(); break;
+      case 'mckinsey': guide('16%','h'); guide('84%','h'); hline(); vline(); break;
+      case 'staff': staff(); break;
+      case 'grid':
+      default: hline(); vline();
+    }
+    return `background-color:${paper.paperColor};`
+      + (imgs.length ? ` background-image:${imgs.join(', ')}; background-size:${sizes.join(', ')}; background-repeat:${reps.join(', ')}; background-position: 0 0;`
+                     : ' background-image:none;');
+  }
   const FOLDER_COLORS = ['#ff5a5f','#ff9f43','#ffd23f','#4ade80','#38bdf8','#818cf8','#c084fc','#f472b6'];
   const DEFAULT_CANVAS_HEIGHT = 1400;
   const GROW_STEP = 800;
@@ -621,7 +754,7 @@
     tool: 'pen',
     tools: { pen: { size: 6, color: '#1b1b1f' }, marker: { size: 14, color: '#eb5757' }, highlighter: { size: 28, color: '#f7d34c' } },
     color: '#1b1b1f', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false,
-    eraserPopoverOpen: false, fingerDraw: false, eraserSize: 18, penSize: 6,
+    eraserPopoverOpen: false, paperModalOpen: false, paperSnapshot: null, fingerDraw: false, eraserSize: 18, penSize: 6,
     wheelLight: 50,
   };
   function toolCfg(){ return TOOL_DEFAULTS[drawState.tool] || TOOL_DEFAULTS.pen; }
@@ -996,8 +1129,7 @@
       if(n.drawing){
         return `<div class="card-thumb"><img src="${n.drawing}" alt="" /></div>`;
       }
-      const bg = n.canvasBg || 'grid';
-      const bgColor = {'dark-dot':'#1c1c1e','light-dot':'#ffffff','black':'#000000','white':'#ffffff','cream':'#f5efe0'}[bg] || '#1c1c1e';
+      const bgColor = getPaper(n).paperColor;
       return `<div class="card-thumb" style="background:${bgColor};"><div class="draw-empty">${ICONS.pen}</div></div>`;
     }
     const bodyPreview = (n.body||'').trim();
@@ -1215,12 +1347,89 @@
     wirePage(note, mode);
   }
 
+  // The Template sheet: pick a page template, paper colour, line colour and
+  // spacing. Changes apply live to the page behind it; Cancel restores the
+  // snapshot taken when the sheet opened.
+  function templateCard(paper, tpl){
+    const preview = paperStyle({ ...paper, template: tpl.id, spacing: Math.max(1, Math.min(4, paper.spacing * 0.4)) }, 7);
+    return `<div class="tpl-card ${paper.template === tpl.id ? 'selected' : ''}" data-tpl="${tpl.id}">
+      <div class="tpl-prev" style="${preview}"></div>
+      <div class="tpl-name">${tpl.name}</div>
+    </div>`;
+  }
+  function renderTemplateModal(paper){
+    const basic = PAPER_TEMPLATES.filter(t => t.group === 'Basic Templates');
+    const edu = PAPER_TEMPLATES.filter(t => t.group === 'Education');
+    const current = PAPER_TEMPLATES.find(t => t.id === paper.template) || PAPER_TEMPLATES[2];
+    return `
+      <div class="tpl-overlay" id="tplOverlay">
+        <div class="tpl-modal" id="tplModal">
+          <div class="tpl-head">
+            <button class="tpl-btn" id="tplCancel">Cancel</button>
+            <h3>Template</h3>
+            <button class="tpl-btn primary" id="tplDone">Done</button>
+          </div>
+          <div class="tpl-body">
+            <div class="tpl-current">
+              <div class="tpl-card" style="width:132px; cursor:default;">
+                <div class="tpl-prev" style="${paperStyle(paper, 7)}"></div>
+                <div class="tpl-name">${current.name}<br><span style="color:#9b9ba1;">Template</span></div>
+              </div>
+              <div class="tpl-rows">
+                <div class="tpl-row"><span>Direction</span>
+                  <select id="tplDirection">
+                    ${['Vertical','Horizontal'].map(d => `<option ${paper.direction===d?'selected':''}>${d}</option>`).join('')}
+                  </select>
+                </div>
+                <div class="tpl-row"><span>Size</span>
+                  <select id="tplSize">
+                    ${['A4','A5','Letter','Tablet'].map(d => `<option ${paper.size===d?'selected':''}>${d}</option>`).join('')}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h4 class="tpl-sec-title">Basic Templates</h4>
+              <div class="tpl-grid">${basic.map(t => templateCard(paper, t)).join('')}</div>
+            </div>
+
+            <div class="tpl-opts">
+              <div>
+                <div class="tpl-opt-label"><span>Paper Color</span></div>
+                <div class="tpl-dots">
+                  ${PAPER_COLORS.map(c => `<span class="tpl-dot ${paper.paperColor.toLowerCase()===c?'selected':''}" data-papercolor="${c}" style="background:${c};"></span>`).join('')}
+                  <span class="tpl-dot add"><input type="color" id="tplPaperCustom" value="${paper.paperColor}" /></span>
+                </div>
+              </div>
+              <div>
+                <div class="tpl-opt-label"><span>Line Color</span></div>
+                <div class="tpl-dots">
+                  ${PAPER_LINE_COLORS.map(c => `<span class="tpl-dot ${paper.lineColor.toLowerCase()===c?'selected':''}" data-linecolor="${c}" style="background:${c};"></span>`).join('')}
+                  <span class="tpl-dot add"><input type="color" id="tplLineCustom" value="${paper.lineColor}" /></span>
+                </div>
+              </div>
+              <div>
+                <div class="tpl-opt-label"><span>Spacing</span><span id="tplSpacingVal">${paper.spacing}</span></div>
+                <input type="range" id="tplSpacing" min="1" max="10" step="1" value="${paper.spacing}" />
+              </div>
+            </div>
+
+            <div>
+              <h4 class="tpl-sec-title">Education</h4>
+              <div class="tpl-grid">${edu.map(t => templateCard(paper, t)).join('')}</div>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
   function renderDrawUI(note){
-    const bg = note.canvasBg || 'grid';
+    const paper = getPaper(note);
     return `
       <div class="canvas-shell">
         <div class="canvas-scroll" id="canvasScroll">
-          <div class="canvas-wrap" data-bg="${bg}" id="canvasWrapEl">
+          <div class="canvas-wrap" id="canvasWrapEl" style="${paperStyle(paper)}">
             <canvas id="drawCanvasBg"></canvas>
             <canvas id="drawCanvas"></canvas>
             <canvas id="drawCanvasPredictive"></canvas>
@@ -1253,9 +1462,7 @@
           </div>
         </div>
 
-        <div class="bg-popover ${drawState.bgPopoverOpen?'show':''}" id="bgPopover">
-          ${BG_OPTIONS.map(b => `<div class="bg-swatch ${bg===b?'selected':''}" data-bgswatch="${b}" title="${b.replace('-',' ')}"></div>`).join('')}
-        </div>
+        ${drawState.paperModalOpen ? renderTemplateModal(paper) : ''}
 
         <div class="eraser-popover ${drawState.eraserPopoverOpen?'show':''}" id="eraserPopover">
           <div class="ep-title">Eraser</div>
@@ -2224,27 +2431,52 @@
 
       bgBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        drawState.bgPopoverOpen = !drawState.bgPopoverOpen;
+        drawState.paperSnapshot = JSON.stringify(getPaper(note));
+        drawState.paperModalOpen = true;
         drawState.colorPopoverOpen = false;
         drawState.eraserPopoverOpen = false;
         renderPage(note);
       });
-      if(bgPopover) bgPopover.addEventListener('click', (e) => e.stopPropagation());
-      mainEl.querySelectorAll('[data-bgswatch]').forEach(s => s.addEventListener('click', (e) => {
-        e.stopPropagation();
-        checkpoint();
-        const chosen = s.dataset.bgswatch;
-        const wasDark = ['dark-dot','black'].includes(note.canvasBg || 'grid');
-        const nowDark = ['dark-dot','black'].includes(chosen);
-        if(wasDark !== nowDark){
-          if(drawState.color === '#ffffff' && nowDark === false) drawState.color = '#000000';
-          else if(drawState.color === '#000000' && nowDark === true) drawState.color = '#ffffff';
+
+      // ----- Template sheet -----
+      function updatePaper(patch){
+        const before = getPaper(note);
+        const next = { ...before, ...patch };
+        if(patch.paperColor && isDarkPaper(before.paperColor) !== isDarkPaper(patch.paperColor)){
+          const nowDark = isDarkPaper(patch.paperColor);
+          if(drawState.color === '#ffffff' && !nowDark) drawState.color = '#000000';
+          else if(drawState.color === '#000000' && nowDark) drawState.color = '#ffffff';
         }
-        note.canvasBg = chosen;
+        note.paper = next;
+        note.canvasBg = isDarkPaper(next.paperColor) ? 'dark-dot' : 'grid';
         note.updatedAt = Date.now();
-        drawState.bgPopoverOpen = false;
-        commitMutation(); renderPage(note);
-      }));
+        commitMutation();
+        renderPage(note);
+      }
+      const tplOverlay = document.getElementById('tplOverlay');
+      if(tplOverlay){
+        const closeTpl = () => { drawState.paperModalOpen = false; renderPage(note); };
+        tplOverlay.addEventListener('click', (e) => { if(e.target === tplOverlay) closeTpl(); });
+        document.getElementById('tplDone').addEventListener('click', closeTpl);
+        document.getElementById('tplCancel').addEventListener('click', () => {
+          if(drawState.paperSnapshot){ note.paper = JSON.parse(drawState.paperSnapshot); note.canvasBg = isDarkPaper(note.paper.paperColor) ? 'dark-dot' : 'grid'; commitMutation(); }
+          closeTpl();
+        });
+        mainEl.querySelectorAll('[data-tpl]').forEach(el => el.addEventListener('click', () => updatePaper({ template: el.dataset.tpl })));
+        mainEl.querySelectorAll('[data-papercolor]').forEach(el => el.addEventListener('click', () => updatePaper({ paperColor: el.dataset.papercolor })));
+        mainEl.querySelectorAll('[data-linecolor]').forEach(el => el.addEventListener('click', () => updatePaper({ lineColor: el.dataset.linecolor })));
+        document.getElementById('tplPaperCustom').addEventListener('change', (e) => updatePaper({ paperColor: e.target.value }));
+        document.getElementById('tplLineCustom').addEventListener('change', (e) => updatePaper({ lineColor: e.target.value }));
+        document.getElementById('tplDirection').addEventListener('change', (e) => updatePaper({ direction: e.target.value }));
+        document.getElementById('tplSize').addEventListener('change', (e) => updatePaper({ size: e.target.value }));
+        const sp = document.getElementById('tplSpacing');
+        sp.addEventListener('input', (e) => {
+          document.getElementById('tplSpacingVal').textContent = e.target.value;
+          const wrap = document.getElementById('canvasWrapEl');
+          if(wrap) wrap.setAttribute('style', paperStyle({ ...getPaper(note), spacing: +e.target.value }));
+        });
+        sp.addEventListener('change', (e) => updatePaper({ spacing: +e.target.value }));
+      }
 
       document.getElementById('clearCanvasBtn').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -2304,7 +2536,7 @@
       const out = document.createElement('canvas');
       out.width = w; out.height = h;
       const octx = out.getContext('2d');
-      const bgStyle = { 'grid':'#ffffff', 'dark-dot':'#1c1c1e', 'light-dot':'#ffffff', 'black':'#000000', 'white':'#ffffff', 'cream':'#f5efe0' }[note.canvasBg || 'grid'] || '#ffffff';
+      const bgStyle = getPaper(note).paperColor;
       octx.fillStyle = bgStyle;
       octx.fillRect(0, 0, w, h);
 
@@ -2338,7 +2570,7 @@
   function createNote(folderId){
     checkpoint();
     const note = {
-      id: uid(), title: '', body: '', mode: 'text', drawing: null, canvasBg: 'grid', canvasHeight: DEFAULT_CANVAS_HEIGHT,
+      id: uid(), title: '', body: '', mode: 'text', drawing: null, canvasBg: 'grid', paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' }, canvasHeight: DEFAULT_CANVAS_HEIGHT,
       icon: ICON_CYCLE[0], tags: [], folderId: folderId || null,
       pinned: false, trashed: false, trashedAt: null,
       createdAt: Date.now(), updatedAt: Date.now(),
