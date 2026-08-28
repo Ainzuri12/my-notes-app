@@ -778,6 +778,19 @@
   let query = '';
   let previewMode = false;
   let saveTimer = null;
+  // Maps noteId -> an offscreen <canvas> holding that note's ink at the
+  // instant it was last stroked, kept purely in memory. It exists to close
+  // a gap opened by making the *persisted* save async (see saveDrawing()):
+  // between a stroke lifting and its PNG finishing encoding, note.drawing
+  // itself is still the pre-stroke value. Anything that runs in that gap —
+  // switching tools or notes (both tear down and rebuild the <canvas> via
+  // setupCanvas/sizeCanvasTo), or the blank-note cleanup on closing the
+  // editor (isBlankNote) — used to see that stale/blank state and could
+  // silently drop the stroke or even delete the note as "empty". This
+  // cache is written synchronously (a cheap bitmap copy, not an encode) so
+  // it's always current, and is checked ahead of note.drawing everywhere
+  // that matters.
+  const liveInk = new Map();
   // Set true for the duration of an in-progress pen/finger stroke (see the
   // canvas pointerdown/up handlers). scheduleSave() checks this so a mid-
   // stroke commitMutation() (e.g. the page growing taller while you write)
@@ -1261,8 +1274,8 @@
   }
   function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
   function commitMutation(){ checkpointed=false; scheduleSave(); }
-  function doUndo(){ if(!undoStack.length) return; redoStack.push(clone(notes)); notes=undoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
-  function doRedo(){ if(!redoStack.length) return; undoStack.push(clone(notes)); notes=redoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
+  function doUndo(){ if(!undoStack.length) return; redoStack.push(clone(notes)); notes=undoStack.pop(); checkpointed=false; liveInk.clear(); scheduleSave(); renderAll(); }
+  function doRedo(){ if(!redoStack.length) return; undoStack.push(clone(notes)); notes=redoStack.pop(); checkpointed=false; liveInk.clear(); scheduleSave(); renderAll(); }
 
   // ---------- markdown ----------
   function renderMarkdown(src){
@@ -1340,7 +1353,7 @@
     // the handler instead of permanently stacking another one on top of it.
     document.querySelectorAll('[data-nav]').forEach(el => { el.onclick = () => {
       const openNote = activeId && activeId !== '__trash__' ? notes.find(n => n.id === activeId) : null;
-      if(openNote && isBlankNote(openNote)) notes = notes.filter(n => n.id !== openNote.id);
+      if(openNote && isBlankNote(openNote)){ notes = notes.filter(n => n.id !== openNote.id); liveInk.delete(openNote.id); }
       nav = el.dataset.nav; activeFolderId = null; tab = 'all'; activeId = null; mobileShowingMain = false;
       renderAll();
     }; });
@@ -1507,6 +1520,7 @@
     mainEl.querySelectorAll('[data-forget]').forEach(b => b.addEventListener('click', () => {
       if(!confirm("Permanently delete this note? This can't be undone.")) return;
       notes = notes.filter(x => x.id !== b.dataset.forget);
+      liveInk.delete(b.dataset.forget);
       scheduleSave(); renderAll();
     }));
   }
@@ -1839,7 +1853,15 @@
       canvas.style.height = newCssH + 'px';
       const ctx2 = canvas.getContext('2d');
       ctx2.scale(ratio, ratio); ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
-      if(note.drawing){
+      const cached = liveInk.get(note.id);
+      if(cached){
+        // A same-session rebuild of this canvas (tool switch, popover,
+        // undo/redo) — draw straight from the always-current in-memory
+        // bitmap instead of note.drawing, which can still be mid-encode
+        // (see saveDrawing()) and therefore stale by however long that
+        // encode takes.
+        ctx2.drawImage(cached, 0, 0, cached.width, cached.height, 0, 0, cssW, preserveOldCssH || newCssH);
+      } else if(note.drawing){
         const img = new Image();
         img.onload = () => ctx2.drawImage(img, 0, 0, cssW, preserveOldCssH || newCssH);
         img.src = note.drawing;
@@ -2528,6 +2550,17 @@
     function saveDrawing(){
       checkpoint(note.id);
       note.updatedAt = Date.now();
+      // Update the live-ink cache synchronously, before the async encode
+      // below even starts — see the comment on `liveInk` near the top of
+      // the file for why this matters (tool/note switches and the blank-
+      // note check must never see a gap where this stroke doesn't "exist"
+      // yet). Copying into an offscreen canvas is a cheap pixel blit, not
+      // an encode, so it doesn't reintroduce the blocking cost this whole
+      // async rework exists to avoid.
+      const liveSnap = document.createElement('canvas');
+      liveSnap.width = canvas.width; liveSnap.height = canvas.height;
+      liveSnap.getContext('2d').drawImage(canvas, 0, 0);
+      liveInk.set(note.id, liveSnap);
       const targetNote = note;
       const myToken = ++drawingSaveToken;
       canvas.toBlob((blob) => {
@@ -2919,7 +2952,7 @@
   }
 
   function isBlankNote(note){
-    return !note.title.trim() && !note.body.trim() && !note.drawing && (!note.tags || note.tags.length === 0);
+    return !note.title.trim() && !note.body.trim() && !note.drawing && !liveInk.has(note.id) && (!note.tags || note.tags.length === 0);
   }
   function closeEditor(note){
     if(isBlankNote(note)){
@@ -3247,6 +3280,7 @@
         if(!confirm(hasBg ? 'Clear your drawing? The imported page(s) underneath will stay.' : 'Clear this drawing?')) return;
         checkpoint();
         note.drawing = null;
+        liveInk.delete(note.id);
         if(hasBg){
           const wrapEl = document.getElementById('canvasWrapEl');
           const cssW = wrapEl ? wrapEl.clientWidth : 0;
