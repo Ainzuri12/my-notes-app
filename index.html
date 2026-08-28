@@ -333,7 +333,39 @@
   .bg-swatch[data-bgswatch="white"]{ background-color:#ffffff; border-color:#555; }
   .bg-swatch[data-bgswatch="cream"]{ background-color:#f5efe0; }
 
-  .stylus-hint{ font-size:11.5px; color: var(--text-tertiary); margin-top:10px; }
+  .stylus-hint{ font-size:11.5px; color: var(--text-tertiary); margin-top:10px;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; pointer-events:none; }
+  /* Nothing under the canvas may be text-selected: on iPad a stray stylus
+     or palm graze used to highlight this hint / the edited date mid-stroke
+     and pop up the selection menu right over what you were writing. */
+  .page-wrap.draw-wrap .footer-meta, .page-wrap.draw-wrap .footer-meta *{
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+
+  /* tool settings sheet */
+  .ts-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+  .ts-head .ts-title{ font-size:14px; font-weight:600; color:var(--text-primary); }
+  .ts-head button{ background:none; border:none; color:var(--text-tertiary); font-size:12.5px; cursor:pointer; padding:2px 4px; }
+  .ts-head button:hover{ color:var(--text-primary); }
+  .ts-field{ margin-bottom:12px; }
+  .ts-label{ display:flex; align-items:center; justify-content:space-between; font-size:12.5px; color:var(--text-secondary); margin-bottom:6px; }
+  .ts-label .ts-val{ color:var(--text-primary); font-variant-numeric: tabular-nums; }
+  .ts-label .ts-step{ display:flex; align-items:center; gap:8px; }
+  .ts-label .ts-step button{ width:20px; height:20px; border-radius:50%; border:1px solid var(--border); background:transparent; color:var(--text-secondary); line-height:1; cursor:pointer; }
+  .ts-field input[type=range]{ width:100%; }
+  .ts-toggle-row{ display:flex; align-items:center; justify-content:space-between; font-size:12.5px; color:var(--text-secondary); margin-bottom:10px; }
+  .ts-switch{ width:44px; height:26px; border-radius:999px; border:none; background: var(--border); position:relative; cursor:pointer; transition: background .15s; }
+  .ts-switch::after{ content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition: transform .15s; }
+  .ts-switch.on{ background: var(--accent); }
+  .ts-switch.on::after{ transform: translateX(18px); }
+  .ts-seg{ display:flex; gap:8px; margin-bottom:12px; }
+  .ts-seg button{ flex:1; padding:9px 4px; border-radius:10px; border:1px solid var(--border); background:transparent; color:var(--text-secondary); font-size:12px; cursor:pointer; }
+  .ts-seg button.active{ border-color: var(--accent); color: var(--text-primary); background: rgba(127,127,127,0.14); }
+  .ts-danger{ display:block; width:100%; margin-top:4px; background:none; border:none; color:#f2564a; font-size:12.5px; cursor:pointer; padding:6px; }
+  .lasso-popover{ position:absolute; left:50%; transform:translateX(-50%); bottom:86px; z-index:6; width:250px;
+    background: var(--panel); border:1px solid var(--border); border-radius:16px; padding:14px; box-shadow: 0 12px 34px var(--shadow);
+    display:none; }
+  .lasso-popover.show{ display:block; }
+  .lasso-hint{ font-size:11.5px; color:var(--text-tertiary); text-align:center; }
 
   .footer-meta{ margin-top: 24px; font-size:11.5px; color: var(--text-tertiary); display:flex; justify-content:space-between; }
 
@@ -745,14 +777,36 @@
   // remembers its own colour and thickness, so switching between them never
   // loses the setup you had for the other.
   const TOOL_DEFAULTS = {
-    pen:         { size: 6,  color: '#ffffff', min: 1,  max: 24, step: 0.5, label: 'Pen' },
-    marker:      { size: 14, color: '#eb5757', min: 4,  max: 44, step: 1,   label: 'Marker' },
-    highlighter: { size: 28, color: '#f7d34c', min: 10, max: 70, step: 1,   label: 'Highlighter' },
+    pen:         { size: 6,  color: '#ffffff', min: 1,  max: 24, step: 0.5, label: 'Pen',         tip: 50, sensitivity: 25, concentration: 100 },
+    pencil:      { size: 5,  color: '#1b1b1f', min: 1,  max: 20, step: 0.5, label: 'Pencil',      sensitivity: 90, concentration: 100 },
+    marker:      { size: 14, color: '#eb5757', min: 4,  max: 44, step: 1,   label: 'Marker',      sensitivity: 40, concentration: 100 },
+    highlighter: { size: 28, color: '#f7d34c', min: 10, max: 70, step: 1,   label: 'Highlighter', concentration: 32 },
   };
+  // Per-tool advanced settings, Goodnotes-style: stability (stroke
+  // smoothing), tip (how fine the pen tapers), sensitivity (how much pen
+  // pressure changes the width), concentration (ink opacity), plus the
+  // highlighter's straight-line and dash options.
+  function toolSettingsDefaults(t){
+    const d = TOOL_DEFAULTS[t] || TOOL_DEFAULTS.pen;
+    return { size: d.size, color: d.color, stability: 1, tip: d.tip == null ? 50 : d.tip,
+      sensitivity: d.sensitivity == null ? 50 : d.sensitivity,
+      concentration: d.concentration == null ? 100 : d.concentration,
+      straightLine: false, dash: 'solid' };
+  }
+  function tset(t){
+    const key = t || drawState.tool;
+    if(!drawState.tools[key]) drawState.tools[key] = toolSettingsDefaults(key);
+    return Object.assign(toolSettingsDefaults(key), drawState.tools[key]);
+  }
+  function patchTool(patch){
+    const key = drawState.tool;
+    drawState.tools[key] = Object.assign(tset(key), patch);
+  }
   const HIGHLIGHTER_ALPHA = 0.32;
   let drawState = {
     tool: 'pen',
-    tools: { pen: { size: 6, color: '#1b1b1f' }, marker: { size: 14, color: '#eb5757' }, highlighter: { size: 28, color: '#f7d34c' } },
+    tools: { pen: { size: 6, color: '#1b1b1f' }, pencil: { size: 5, color: '#1b1b1f' }, marker: { size: 14, color: '#eb5757' }, highlighter: { size: 28, color: '#f7d34c' } },
+    lasso: { mode: 'freedom' }, lassoPopoverOpen: false,
     color: '#1b1b1f', erasing: false, colorPopoverOpen: false, bgPopoverOpen: false,
     eraserPopoverOpen: false, paperModalOpen: false, paperSnapshot: null, fingerDraw: false, eraserSize: 18, penSize: 6,
     wheelLight: 50,
@@ -1443,23 +1497,63 @@
         </div>
 
         <div class="swatch-popover ${drawState.colorPopoverOpen?'show':''}" id="colorPopover">
-          <div class="ep-title">${toolCfg().label}</div>
-          <div class="ep-preview"><div class="ep-preview-dot" id="penPreviewDot" style="width:${drawState.penSize}px; height:${drawState.penSize}px; background:${drawState.color}; opacity:${drawState.tool==='highlighter'?0.45:1};"></div></div>
-          <div class="ep-row">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/></svg>
-            <input type="range" id="penSizeSlider" min="${toolCfg().min}" max="${toolCfg().max}" step="${toolCfg().step}" value="${drawState.penSize}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+          <div class="ts-head">
+            <button id="toolResetBtn" title="Reset this tool to its defaults">Reset</button>
+            <span class="ts-title">${toolCfg().label}</span>
+            <button id="toolAdvancedBtn">${drawState.advancedOpen ? 'Less' : 'Advanced'}</button>
           </div>
-          <span class="ep-size-label" id="penSizeLabel">${drawState.penSize}px</span>
+          <div class="ep-preview"><div class="ep-preview-dot" id="penPreviewDot" style="width:${drawState.penSize}px; height:${drawState.penSize}px; background:${drawState.color}; opacity:${(tset().concentration||100)/100};"></div></div>
+
+          ${drawState.tool === 'highlighter' ? '' : `
+          <div class="ts-field">
+            <div class="ts-label"><span>Stability</span><span class="ts-val" id="stabilityVal">${tset().stability}</span></div>
+            <input type="range" class="ts-range" data-setting="stability" min="0" max="5" step="1" value="${tset().stability}">
+          </div>`}
+
+          ${(drawState.tool === 'pen' && drawState.advancedOpen) ? `
+          <div class="ts-field">
+            <div class="ts-label"><span>Tip</span><span class="ts-val" id="tipVal">${tset().tip}%</span></div>
+            <input type="range" class="ts-range" data-setting="tip" min="0" max="100" step="1" value="${tset().tip}">
+          </div>` : ''}
+
+          ${drawState.tool === 'highlighter' ? '' : `
+          <div class="ts-field">
+            <div class="ts-label"><span>Sensitivity</span><span class="ts-val" id="sensitivityVal">${tset().sensitivity}%</span></div>
+            <input type="range" class="ts-range" data-setting="sensitivity" min="0" max="100" step="1" value="${tset().sensitivity}">
+          </div>`}
+
+          <div class="ts-field">
+            <div class="ts-label"><span>Thickness</span>
+              <span class="ts-step"><button id="thickMinus">−</button><span class="ts-val" id="penSizeLabel">${drawState.penSize}</span><button id="thickPlus">+</button></span>
+            </div>
+            <input type="range" id="penSizeSlider" min="${toolCfg().min}" max="${toolCfg().max}" step="${toolCfg().step}" value="${drawState.penSize}">
+          </div>
+
+          <div class="ts-field">
+            <div class="ts-label"><span>Concentration</span><span class="ts-val" id="concentrationVal">${tset().concentration}%</span></div>
+            <input type="range" class="ts-range" data-setting="concentration" min="10" max="100" step="1" value="${tset().concentration}">
+          </div>
+
+          ${drawState.tool === 'highlighter' ? `
+          <div class="ts-toggle-row"><span>Draw in Straight Line</span>
+            <button class="ts-switch ${tset().straightLine?'on':''}" id="straightLineToggle" aria-label="Draw in straight line"></button>
+          </div>
+          <div class="ts-seg" id="dashSeg">
+            <button data-dash="solid" class="${tset().dash==='solid'?'active':''}">━━━</button>
+            <button data-dash="dotted" class="${tset().dash==='dotted'?'active':''}">• • •</button>
+            <button data-dash="dashed" class="${tset().dash==='dashed'?'active':''}">- - -</button>
+          </div>` : ''}
+
           <div class="swatch-row">
             ${INK_COLORS.map(c => `<div class="swatch ${(!drawState.erasing && drawState.color.toLowerCase()===c) ? 'selected':''}" data-color="${c}" style="background:${c};"></div>`).join('')}
             <input type="color" id="customColorInput" value="${drawState.color}" title="Custom color" />
           </div>
+          ${drawState.advancedOpen ? `
           <div class="wheel-wrap">
             <canvas id="colorWheel" width="150" height="150"></canvas>
             <input type="range" id="wheelLightSlider" min="8" max="92" step="1" value="${drawState.wheelLight}" title="Lightness">
             <div class="wheel-readout"><span class="chip" id="wheelChip" style="background:${drawState.color};"></span><span id="wheelHex">${drawState.color}</span></div>
-          </div>
+          </div>` : ''}
         </div>
 
         ${drawState.paperModalOpen ? renderTemplateModal(paper) : ''}
@@ -1475,9 +1569,23 @@
           <span class="ep-size-label" id="eraserSizeLabel">${drawState.eraserSize}px</span>
         </div>
 
+        <div class="lasso-popover ${drawState.lassoPopoverOpen?'show':''}" id="lassoPopover">
+          <div class="ts-head"><span class="ts-title" style="margin:0 auto;">Lasso</span></div>
+          <div class="ts-seg" id="lassoSeg">
+            <button data-lasso="freedom" class="${drawState.lasso.mode==='freedom'?'active':''}">Freedom</button>
+            <button data-lasso="boxed" class="${drawState.lasso.mode==='boxed'?'active':''}">Boxed</button>
+          </div>
+          <div class="lasso-hint">Draw around what you want, then drag it to move. Tap anywhere else to drop it.</div>
+          <button class="ts-danger" id="lassoDeleteBtn">Delete selection</button>
+        </div>
+
         <div class="canvas-toolbar">
           <button class="ct-btn ${(!drawState.erasing && drawState.tool==='pen')?'active':''}" id="penBtn" title="Pen — pressure-tapered ink">
             ${ICONS.pen}<span class="ct-dot" style="background:${drawState.tools.pen.color};"></span><span class="ct-label">Pen</span>
+          </button>
+          <button class="ct-btn ${(!drawState.erasing && drawState.tool==='pencil')?'active':''}" id="pencilBtn" title="Pencil — soft, grainy graphite">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+            <span class="ct-dot" style="background:${(drawState.tools.pencil||{}).color||'#1b1b1f'};"></span><span class="ct-label">Pencil</span>
           </button>
           <button class="ct-btn ${(!drawState.erasing && drawState.tool==='marker')?'active':''}" id="markerBtn" title="Marker — bold, even stroke">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3l6 6-9.5 9.5H5V12z"/><path d="M4 21h16"/></svg>
@@ -1488,6 +1596,10 @@
             <span class="ct-dot" style="background:${drawState.tools.highlighter.color};"></span><span class="ct-label">Highlight</span>
           </button>
           <button class="ct-btn ${drawState.erasing?'active':''}" id="eraserBtn" title="Eraser">${ICONS.eraser}<span class="ct-label">Eraser</span></button>
+          <button class="ct-btn ${(!drawState.erasing && drawState.tool==='lasso')?'active':''}" id="lassoBtn" title="Lasso — select and move ink">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 3"><ellipse cx="12" cy="10" rx="8" ry="6"/><path d="M8 16c0 2 1 4 3 4"/></svg>
+            <span class="ct-label">Lasso</span>
+          </button>
           <button class="ct-btn ${drawState.fingerDraw?'active':''}" id="panBtn" title="${drawState.fingerDraw ? 'Finger draws — tap to have one finger scroll instead' : 'One finger scrolls — tap to draw with your finger instead'}">${ICONS.hand}<span class="ct-label">${drawState.fingerDraw ? 'Finger' : 'Scroll'}</span></button>
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
@@ -1501,6 +1613,7 @@
     `;
   }
 
+  let canvasApi = null;
   function setupCanvas(note){
     const canvas = document.getElementById('drawCanvas');
     if(!canvas) return;
@@ -1541,6 +1654,97 @@
     function clearPredictive(){
       if(!predCtx) return;
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
+    }
+
+    // ----- Lasso: lift a region of ink off the page, drag it, drop it -----
+    // The page is a raster canvas, so a selection is literally a cut-out
+    // bitmap: the chosen region is copied to its own canvas, erased from the
+    // page, and drawn live on the overlay until it's dropped again.
+    let lassoPath = [];         // CSS-px points of the selection outline
+    let lassoSel = null;        // { canvas, x, y, w, h, path }
+    let lassoOffset = { x: 0, y: 0 };
+    let lassoDragging = false, lassoDragFrom = null, lassoDrawing = false;
+
+    function lassoActive(){ return !drawState.erasing && drawState.tool === 'lasso'; }
+    function pathFor(points, ctx2){
+      ctx2.beginPath();
+      points.forEach((pt, i) => i ? ctx2.lineTo(pt.x, pt.y) : ctx2.moveTo(pt.x, pt.y));
+      ctx2.closePath();
+    }
+    function pointInPath(points, x, y){
+      let inside = false;
+      for(let i = 0, j = points.length - 1; i < points.length; j = i++){
+        const a = points[i], b = points[j];
+        if(((a.y > y) !== (b.y > y)) && (x < (b.x - a.x) * (y - a.y) / ((b.y - a.y) || 1e-6) + a.x)) inside = !inside;
+      }
+      return inside;
+    }
+    function renderLasso(){
+      if(!predCtx) return;
+      clearPredictive();
+      if(predCanvas) predCanvas.style.opacity = '1';
+      predCtx.save();
+      if(lassoSel){
+        predCtx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
+      }
+      const outline = lassoSel ? lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })) : lassoPath;
+      if(outline.length > 1){
+        predCtx.setLineDash([6, 5]);
+        predCtx.lineWidth = 1.5;
+        predCtx.strokeStyle = 'rgba(90,160,255,0.95)';
+        pathFor(outline, predCtx);
+        predCtx.stroke();
+      }
+      predCtx.restore();
+    }
+    function lassoDropSelection(){
+      if(!lassoSel) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
+      ctx.restore();
+      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
+      clearPredictive();
+      saveDrawing();
+    }
+    function lassoDeleteSelection(){
+      if(!lassoSel) return;
+      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
+      clearPredictive();
+      saveDrawing();
+    }
+    function lassoLift(){
+      let pts = lassoPath;
+      if(drawState.lasso.mode === 'boxed' && pts.length > 1){
+        const a = pts[0], b = pts[pts.length - 1];
+        pts = [{x:a.x,y:a.y},{x:b.x,y:a.y},{x:b.x,y:b.y},{x:a.x,y:b.y}];
+      }
+      if(pts.length < 3){ lassoPath = []; clearPredictive(); return; }
+      const xs = pts.map(pt => pt.x), ys = pts.map(pt => pt.y);
+      const x = Math.max(0, Math.min(...xs) - 2), y = Math.max(0, Math.min(...ys) - 2);
+      const w = Math.min(wrap.clientWidth - x, Math.max(...xs) - x + 4);
+      const h = Math.min(cssH - y, Math.max(...ys) - y + 4);
+      if(w < 4 || h < 4){ lassoPath = []; clearPredictive(); return; }
+      const cut = document.createElement('canvas');
+      cut.width = Math.ceil(w * ratio); cut.height = Math.ceil(h * ratio);
+      const cctx = cut.getContext('2d');
+      cctx.scale(ratio, ratio);
+      cctx.translate(-x, -y);
+      pathFor(pts, cctx);
+      cctx.clip();
+      cctx.drawImage(canvas, 0, 0, wrap.clientWidth, cssH);
+      // Erase the lifted region from the page itself.
+      ctx.save();
+      pathFor(pts, ctx);
+      ctx.clip();
+      ctx.clearRect(x, y, w, h);
+      ctx.restore();
+      lassoSel = { canvas: cut, x, y, w, h, path: pts.map(pt => ({ x: pt.x, y: pt.y })) };
+      lassoPath = [];
+      lassoOffset = { x: 0, y: 0 };
+      renderLasso();
+      saveDrawing();
     }
 
     // Imported reference material (a past paper PDF/image you're working
@@ -1766,7 +1970,27 @@
     // pressure/velocity/taper rather than jumping between fixed-width
     // segments — the same core trick real drawing apps use for a tapered,
     // organic pen line instead of a uniform ruled one.
+    // Deterministic pseudo-random so a live (re-rendered every frame)
+    // pencil stroke keeps exactly the same grain instead of shimmering.
+    function hashNoise(x, y, k){
+      const v = Math.sin(x * 12.9898 + y * 78.233 + k * 37.719) * 43758.5453;
+      return v - Math.floor(v);
+    }
     function stampCircle(targetCtx, x, y, r){
+      if(drawState.tool === 'pencil' && !strokeIsErasing){
+        const rad = Math.max(0.4, r);
+        const prevAlpha = targetCtx.globalAlpha;
+        for(let i = 0; i < 3; i++){
+          const a = hashNoise(x, y, i) * Math.PI * 2;
+          const d = hashNoise(y, x, i + 5) * rad * 0.75;
+          targetCtx.globalAlpha = prevAlpha * (0.3 + 0.45 * hashNoise(x + i, y - i, 9));
+          targetCtx.beginPath();
+          targetCtx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, rad * (0.55 + 0.35 * hashNoise(x, y, i + 2)), 0, Math.PI * 2);
+          targetCtx.fill();
+        }
+        targetCtx.globalAlpha = prevAlpha;
+        return;
+      }
       targetCtx.beginPath();
       targetCtx.arc(x, y, Math.max(0.4, r), 0, Math.PI * 2);
       targetCtx.fill();
@@ -1775,11 +1999,12 @@
     // along the segment — substep density scales with distance so fast
     // strokes (fewer, farther-apart real samples) still render continuous
     // ink instead of visible dots.
-    function stampSegment(targetCtx, x0, y0, r0, x1, y1, r1){
+    function stampSegment(targetCtx, x0, y0, r0, x1, y1, r1, cumStart){
       const dist = Math.hypot(x1 - x0, y1 - y0);
       const steps = Math.max(1, Math.ceil(dist / 1.4));
       for(let i = 1; i <= steps; i++){
         const t = i / steps;
+        if(cumStart != null && !dashOn(cumStart + dist * t)) continue;
         stampCircle(targetCtx, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r0 + (r1 - r0) * t);
       }
     }
@@ -1800,14 +2025,29 @@
     // Only the pen behaves like real tapered ink. A marker lays down a bold,
     // even stroke (a touch of pressure response, no taper), and a
     // highlighter is dead flat and constant-width like a real chisel tip.
-    function baseRadiusFor(pressure, dist, cum){
+    // Sensitivity dials how much of the raw pen pressure actually reaches
+    // the stroke width: 0% is a dead-even line, 100% is fully expressive.
+    function effPressure(pressure){
+      const sens = (tset().sensitivity == null ? 50 : tset().sensitivity) / 100;
+      return Math.max(0.05, Math.min(1, 0.5 + (pressure - 0.5) * (sens * 2)));
+    }
+    function baseRadiusFor(rawPressure, dist, cum){
       const maxD = drawState.penSize;
       if(drawState.tool === 'highlighter') return maxD / 2;
+      const pressure = effPressure(rawPressure);
       if(drawState.tool === 'marker'){
         const p = Math.max(0.75, Math.min(1, pressure + 0.35));
         return (maxD * p) / 2;
       }
-      const pressureR = Math.max(maxD * 0.2, pressure * maxD) / 2;
+      if(drawState.tool === 'pencil'){
+        // Graphite: no taper, width tracks pressure, grain comes from the
+        // scatter in stampCircle.
+        return (maxD * (0.55 + 0.45 * pressure)) / 2;
+      }
+      // Tip: a fine tip keeps a thin floor and a sharper lead-in, a fat tip
+      // starts closer to full width.
+      const tip = (tset().tip == null ? 50 : tset().tip) / 100;
+      const pressureR = Math.max(maxD * (0.08 + 0.32 * tip), pressure * maxD) / 2;
       const speedScale = Math.max(0.55, 1 - Math.min(dist, 20) / 20 * 0.45);
       const startT = Math.min(1, cum / START_TAPER_DIST);
       const startTaper = 0.28 + 0.72 * startT;
@@ -1815,6 +2055,7 @@
     }
     function endTaperedRadius(r, distFromEnd){
       if(drawState.tool !== 'pen') return r;
+      if(strokeStraight) return r;
       const t = Math.min(1, Math.max(0, distFromEnd) / END_TAPER_DIST);
       return r * (0.18 + 0.82 * t);
     }
@@ -1838,8 +2079,29 @@
     // opacity via CSS) and only flattened onto the real page once, at the
     // chosen alpha, when the pen lifts.
     let strokeIsHighlighter = false;
+    let strokeAlpha = 1;      // ink opacity from the tool's Concentration
+    let strokeStraight = false; // "Draw in Straight Line" is on for this stroke
+    let strokeDash = 'solid';
+    function currentAlpha(){
+      const c = tset().concentration;
+      return Math.max(0.05, Math.min(1, (c == null ? 100 : c) / 100));
+    }
+    // Anything that isn't fully opaque has to be laid down as one flat layer
+    // on the overlay and flattened once on lift-off, otherwise overlapping
+    // stamps inside a single stroke stack up and look blotchy.
+    function toolIsFlattened(){
+      return drawState.tool === 'highlighter' || drawState.tool === 'pencil' || currentAlpha() < 0.999;
+    }
     function setPredictiveOpacity(){
-      if(predCanvas) predCanvas.style.opacity = strokeIsHighlighter ? String(HIGHLIGHTER_ALPHA) : '1';
+      if(predCanvas) predCanvas.style.opacity = strokeIsHighlighter ? String(strokeAlpha) : '1';
+    }
+    // Dotted / dashed highlighter: skip the gaps as we walk along the path.
+    function dashOn(cum){
+      if(strokeDash === 'solid') return true;
+      const unit = Math.max(6, drawState.penSize * (strokeDash === 'dotted' ? 0.9 : 1.8));
+      const period = strokeDash === 'dotted' ? unit * 2 : unit * 2.2;
+      const on = strokeDash === 'dotted' ? unit * 0.55 : unit * 1.2;
+      return (cum % period) < on;
     }
 
     function bakeUpTo(uptoIdx){
@@ -1863,8 +2125,15 @@
       if(strokePts.length < 1) return;
       const lastReal = strokePts[strokePts.length - 1];
       const total = lastReal.cum + (extraPt ? Math.hypot(extraPt.x - lastReal.x, extraPt.y - lastReal.y) : 0);
-      const pts = strokePts.slice(Math.max(0, bakedCount - 1));
-      const all = extraPt ? pts.concat([{ x: extraPt.x, y: extraPt.y, r: extraPt.r, cum: total }]) : pts;
+      let pts = strokePts.slice(Math.max(0, bakedCount - 1));
+      let all = extraPt ? pts.concat([{ x: extraPt.x, y: extraPt.y, r: extraPt.r, cum: total }]) : pts;
+      if(strokeStraight && strokePts.length > 1){
+        // Straight-line mode: ignore the wobble entirely and draw a clean
+        // ruler line from where the stroke started to where it is now.
+        const a0 = strokePts[0], a1 = all[all.length - 1];
+        const len = Math.hypot(a1.x - a0.x, a1.y - a0.y);
+        all = [{ x: a0.x, y: a0.y, r: a0.r, cum: 0 }, { x: a1.x, y: a1.y, r: a1.r, cum: len }];
+      }
       predCtx.globalCompositeOperation = 'source-over';
       predCtx.fillStyle = drawState.color;
       if(all.length === 1){
@@ -1876,7 +2145,7 @@
         const a = all[i - 1], b = all[i];
         const ra = endTaperedRadius(a.r, total - a.cum);
         const rb = endTaperedRadius(b.r, total - b.cum);
-        stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb);
+        stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb, strokeDash === 'solid' ? null : a.cum);
       }
     }
 
@@ -1989,8 +2258,27 @@
       moveEraserCursor(x, y);
       showEraserCursor();
 
+      if(lassoActive()){
+        if(lassoSel){
+          const inside = pointInPath(lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })), x, y);
+          if(inside){
+            lassoDragging = true; lassoDragFrom = { x, y };
+            lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
+            return;
+          }
+          lassoDropSelection();
+        }
+        lassoDrawing = true;
+        lassoPath = [{ x, y }];
+        renderLasso();
+        return;
+      }
+
       strokeIsErasing = drawState.erasing;
-      strokeIsHighlighter = !strokeIsErasing && drawState.tool === 'highlighter';
+      strokeAlpha = currentAlpha();
+      strokeStraight = !strokeIsErasing && drawState.tool === 'highlighter' && !!tset().straightLine;
+      strokeDash = (!strokeIsErasing && drawState.tool === 'highlighter') ? (tset().dash || 'solid') : 'solid';
+      strokeIsHighlighter = !strokeIsErasing && toolIsFlattened();
       setPredictiveOpacity();
       ctx.globalCompositeOperation = strokeIsErasing ? 'destination-out' : 'source-over';
       ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
@@ -2044,12 +2332,27 @@
 
       if(gestureMode !== 'draw' || !drawing) return;
 
+      if(lassoActive()){
+        const [lx, ly] = pos(e);
+        if(lassoDragging && lassoDragFrom){
+          lassoOffset = { x: lx - lassoDragFrom.x + (lassoOffset.baseX || 0), y: ly - lassoDragFrom.y + (lassoOffset.baseY || 0) };
+          renderLasso();
+        } else if(lassoDrawing){
+          lassoPath.push({ x: lx, y: ly });
+          renderLasso();
+        }
+        return;
+      }
+
       // A bare finger is a noisier input source than a stylus — a light
       // exponential-moving-average tames the small tremor/jitter without
       // adding noticeable lag. Pen/mouse input is precise enough already,
       // so it goes through untouched (heavy smoothing there would just add
       // lag for no benefit).
-      const jitterAlpha = e.pointerType === 'touch' ? 0.55 : 0;
+      // Stability adds deliberate smoothing on top of the baseline finger
+      // jitter filter, so a shaky hand still lays down a clean line.
+      const stability = drawState.erasing ? 0 : (tset().stability || 0);
+      const jitterAlpha = Math.min(0.9, Math.max(e.pointerType === 'touch' ? 0.55 : 0, stability * 0.15));
 
       // Use getCoalescedEvents so fast strokes (especially with an Apple
       // Pencil / stylus) don't skip the many sub-frame points the browser
@@ -2128,7 +2431,7 @@
       }
       activePointers.delete(e.pointerId);
       hideEraserCursor();
-      if(!(gestureMode === 'draw' && drawing && strokeIsHighlighter)) clearPredictive();
+      if(!(gestureMode === 'draw' && drawing && (strokeIsHighlighter || lassoActive()))) clearPredictive();
       if(gestureMode === 'scroll'){
         if(activePointers.size === 0) gestureMode = 'idle';
         return;
@@ -2136,6 +2439,17 @@
       if(gestureMode === 'draw' && drawing){
         drawing = false; gestureMode = 'idle';
         primaryPointerId = null; primaryPointerType = null;
+        if(lassoActive()){
+          if(lassoDragging){
+            lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
+            lassoDragging = false; lassoDragFrom = null;
+            renderLasso();
+          } else if(lassoDrawing){
+            lassoDrawing = false;
+            lassoLift();
+          }
+          return;
+        }
         if(strokeIsHighlighter){
           // Flatten the whole overlay stroke onto the page in one pass at
           // highlighter opacity, so overlaps within the stroke stay even.
@@ -2156,7 +2470,7 @@
             ctx.save();
             ctx.setTransform(1, 0, 0, 1, 0, 0);
             ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = HIGHLIGHTER_ALPHA;
+            ctx.globalAlpha = strokeAlpha;
             ctx.drawImage(predCanvas, 0, 0);
             ctx.restore();
           }
@@ -2193,6 +2507,8 @@
     scrollEl.addEventListener('scroll', () => {
       growIfNear(scrollEl.scrollTop + scrollEl.clientHeight);
     }, { passive: true });
+
+    canvasApi = { deleteSelection: lassoDeleteSelection, dropSelection: lassoDropSelection };
 
     // resume scroll position near where they left off (bottom of drawn content) on first open
     if(note.drawing) requestAnimationFrame(() => { scrollEl.scrollTop = 0; });
@@ -2318,17 +2634,22 @@
       // tapping a different one switches to it (and brings up its settings),
       // restoring that tool's own remembered colour and thickness.
       function selectTool(t){
-        const wasOpen = drawState.colorPopoverOpen && !drawState.erasing && drawState.tool === t;
-        if(!drawState.erasing) saveToolState();
+        const popOpen = t === 'lasso' ? drawState.lassoPopoverOpen : drawState.colorPopoverOpen;
+        const wasOpen = popOpen && !drawState.erasing && drawState.tool === t;
+        if(!drawState.erasing && drawState.tool !== 'lasso') saveToolState();
+        if(drawState.tool === 'lasso' && t !== 'lasso' && canvasApi) canvasApi.dropSelection();
         drawState.tool = t;
-        loadToolState();
+        if(t !== 'lasso') loadToolState();
         drawState.erasing = false;
-        drawState.colorPopoverOpen = !wasOpen;
+        drawState.colorPopoverOpen = t !== 'lasso' && !wasOpen;
+        drawState.lassoPopoverOpen = t === 'lasso' && !wasOpen;
         drawState.bgPopoverOpen = false;
         drawState.eraserPopoverOpen = false;
         renderPage(note);
       }
       penBtn.addEventListener('click', (e) => { e.stopPropagation(); selectTool('pen'); });
+      document.getElementById('pencilBtn').addEventListener('click', (e) => { e.stopPropagation(); selectTool('pencil'); });
+      document.getElementById('lassoBtn').addEventListener('click', (e) => { e.stopPropagation(); selectTool('lasso'); });
       document.getElementById('markerBtn').addEventListener('click', (e) => { e.stopPropagation(); selectTool('marker'); });
       document.getElementById('highlighterBtn').addEventListener('click', (e) => { e.stopPropagation(); selectTool('highlighter'); });
 
@@ -2391,10 +2712,59 @@
           const dot = document.getElementById('penPreviewDot');
           const label = document.getElementById('penSizeLabel');
           if(dot){ dot.style.width = drawState.penSize + 'px'; dot.style.height = drawState.penSize + 'px'; }
-          if(label) label.textContent = drawState.penSize + 'px';
+          if(label) label.textContent = String(drawState.penSize);
         });
         penSizeSlider.addEventListener('click', (e) => e.stopPropagation());
       }
+
+      // Advanced per-tool sliders: stability / tip / sensitivity / concentration.
+      mainEl.querySelectorAll('.ts-range[data-setting]').forEach(input => {
+        input.addEventListener('click', (e) => e.stopPropagation());
+        input.addEventListener('input', (e) => {
+          e.stopPropagation();
+          const key = input.dataset.setting;
+          const val = parseInt(e.target.value, 10);
+          patchTool({ [key]: val });
+          const out = document.getElementById(key + 'Val');
+          if(out) out.textContent = key === 'stability' ? String(val) : val + '%';
+          if(key === 'concentration'){
+            const dot = document.getElementById('penPreviewDot');
+            if(dot) dot.style.opacity = String(val / 100);
+          }
+        });
+      });
+
+      const stepThickness = (dir) => {
+        const cfg = toolCfg();
+        const next = Math.min(cfg.max, Math.max(cfg.min, +(drawState.penSize + dir * cfg.step).toFixed(2)));
+        drawState.penSize = next; saveToolState(); renderPage(note);
+      };
+      document.getElementById('thickMinus')?.addEventListener('click', (e) => { e.stopPropagation(); stepThickness(-1); });
+      document.getElementById('thickPlus')?.addEventListener('click', (e) => { e.stopPropagation(); stepThickness(1); });
+
+      document.getElementById('toolAdvancedBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation(); drawState.advancedOpen = !drawState.advancedOpen; renderPage(note);
+      });
+      document.getElementById('toolResetBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const d = toolSettingsDefaults(drawState.tool);
+        drawState.tools[drawState.tool] = Object.assign(d, { color: drawState.color });
+        drawState.penSize = d.size;
+        renderPage(note);
+      });
+      document.getElementById('straightLineToggle')?.addEventListener('click', (e) => {
+        e.stopPropagation(); patchTool({ straightLine: !tset().straightLine }); renderPage(note);
+      });
+      mainEl.querySelectorAll('#dashSeg [data-dash]').forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation(); patchTool({ dash: b.dataset.dash }); renderPage(note);
+      }));
+      mainEl.querySelectorAll('#lassoSeg [data-lasso]').forEach(b => b.addEventListener('click', (e) => {
+        e.stopPropagation(); drawState.lasso.mode = b.dataset.lasso; renderPage(note);
+      }));
+      document.getElementById('lassoDeleteBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation(); if(canvasApi) canvasApi.deleteSelection();
+      });
+      document.getElementById('lassoPopover')?.addEventListener('click', (e) => e.stopPropagation());
       if(colorPopover) colorPopover.addEventListener('click', (e) => e.stopPropagation());
 
       document.getElementById('eraserBtn').addEventListener('click', (e) => {
@@ -2425,7 +2795,7 @@
       document.getElementById('panBtn').addEventListener('click', (e) => {
         e.stopPropagation();
         drawState.fingerDraw = !drawState.fingerDraw;
-        drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false; drawState.eraserPopoverOpen = false;
+        drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false; drawState.eraserPopoverOpen = false; drawState.lassoPopoverOpen = false;
         renderPage(note);
       });
 
@@ -2620,8 +2990,8 @@
     document.querySelectorAll('.menu-pop').forEach(m => m.classList.remove('show'));
     const fpm = document.getElementById('folderPickerMenu');
     if(fpm && folderPickerOpen){ folderPickerOpen = false; fpm.classList.remove('show'); }
-    if(drawState.colorPopoverOpen || drawState.bgPopoverOpen || drawState.eraserPopoverOpen){
-      drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false; drawState.eraserPopoverOpen = false;
+    if(drawState.colorPopoverOpen || drawState.bgPopoverOpen || drawState.eraserPopoverOpen || drawState.lassoPopoverOpen){
+      drawState.colorPopoverOpen = false; drawState.bgPopoverOpen = false; drawState.eraserPopoverOpen = false; drawState.lassoPopoverOpen = false;
       const note = notes.find(n => n.id === activeId);
       if(note && (note.mode||'text') === 'draw') renderPage(note);
     }
