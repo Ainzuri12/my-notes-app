@@ -1943,34 +1943,49 @@
     // absolutely positioned and moved with the scroll position, and only the
     // pages that actually intersect that window are decoded and drawn. Page
     // count is therefore effectively unlimited.
-    const BG_CACHE_MAX = 8;                 // decoded pages kept in memory (LRU)
-    const bgImageCache = new Map();         // src -> decoded Image, most-recent last
-    const bgPending = new Map();            // src -> in-flight decode promise
-    function bgCacheGet(src){
-      if(!bgImageCache.has(src)) return null;
-      const img = bgImageCache.get(src);
-      bgImageCache.delete(src); bgImageCache.set(src, img); // refresh recency
+    const BG_CACHE_MAX = 12;                // decoded pages kept in memory (LRU)
+    const bgImageCache = new Map();         // key -> decoded bitmap, most-recent last
+    const bgPending = new Map();            // key -> in-flight decode promise
+    function bgCacheGet(key){
+      if(!bgImageCache.has(key)) return null;
+      const img = bgImageCache.get(key);
+      bgImageCache.delete(key); bgImageCache.set(key, img); // refresh recency
       return img;
     }
-    function bgCachePut(src, img){
-      bgImageCache.set(src, img);
+    function bgCachePut(key, img){
+      bgImageCache.set(key, img);
       while(bgImageCache.size > BG_CACHE_MAX){
-        const oldest = bgImageCache.keys().next().value;
-        bgImageCache.delete(oldest); // drop the off-screen bitmap; it re-decodes if scrolled back to
+        const oldestKey = bgImageCache.keys().next().value;
+        const oldest = bgImageCache.get(oldestKey);
+        bgImageCache.delete(oldestKey); // drop the off-screen bitmap; it re-decodes if scrolled back to
+        if(oldest && typeof oldest.close === 'function') oldest.close();
       }
     }
-    function loadBgImage(src){
-      const hit = bgCacheGet(src);
+    // Pages are decoded AND downscaled once, off the main thread, to exactly
+    // the pixel size they're painted at. Scaling a 3000px-wide page down to
+    // the canvas on every single repaint was the expensive part of scrolling;
+    // a pre-sized bitmap makes each repaint a straight 1:1 blit.
+    function loadBgImage(src, pxW, pxH){
+      const key = src + '@' + pxW + 'x' + pxH;
+      const hit = bgCacheGet(key);
       if(hit) return Promise.resolve(hit);
-      if(bgPending.has(src)) return bgPending.get(src);
+      if(bgPending.has(key)) return bgPending.get(key);
       const p = new Promise((resolve) => {
         const img = new Image();
         img.decoding = 'async';
-        img.onload = () => { bgCachePut(src, img); bgPending.delete(src); resolve(img); };
-        img.onerror = () => { bgPending.delete(src); resolve(null); };
+        img.onload = async () => {
+          let out = img;
+          try{
+            if(typeof createImageBitmap === 'function'){
+              out = await createImageBitmap(img, { resizeWidth: pxW, resizeHeight: pxH, resizeQuality: 'high' });
+            }
+          }catch(err){ out = img; }
+          bgCachePut(key, out); bgPending.delete(key); resolve(out);
+        };
+        img.onerror = () => { bgPending.delete(key); resolve(null); };
         img.src = src;
       });
-      bgPending.set(src, p);
+      bgPending.set(key, p);
       return p;
     }
     function bgPageLayout(cssW){
@@ -1991,72 +2006,98 @@
     let bgW = wrap.clientWidth;
     let bgDocH = cssH;
     let bgFrame = 0;
-    let bgLastKey = '';
+    let bgPaintToken = 0;
+    // The window of document space currently painted onto the bg canvas.
+    let bgPainted = { w: 0, top: 0, bottom: 0, pages: -1 };
     function scheduleBgDraw(force){
-      if(force) bgLastKey = '';
+      if(force) bgPainted = { w: 0, top: 0, bottom: 0, pages: -1 };
       if(bgFrame) return;
       bgFrame = requestAnimationFrame(() => { bgFrame = 0; drawBgViewport(); });
     }
-    function drawBgViewport(){
+    async function drawBgViewport(){
       if(!bgCanvas || !bgCtx) return;
       const cssW = bgW;
       const pages = bgPageLayout(cssW);
       if(!pages.length){
-        bgCanvas.width = 0; bgCanvas.height = 0;
-        bgLastKey = 'empty';
+        if(bgCanvas.width || bgCanvas.height){ bgCanvas.width = 0; bgCanvas.height = 0; }
+        bgPainted = { w: cssW, top: 0, bottom: 0, pages: 0 };
         return;
       }
       const viewH = Math.max(1, scrollEl ? scrollEl.clientHeight : bgDocH);
       const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+      // Nothing to do at all while the viewport stays comfortably inside the
+      // window that's already painted. This is what makes scrolling free:
+      // the canvas is inside the scrolling content, so it moves with the page
+      // on its own — no per-frame clear, no per-frame repaint.
+      const slack = viewH * 0.4;
+      if(bgPainted.pages === pages.length && bgPainted.w === cssW &&
+         (bgPainted.top <= 0 || scrollTop - slack >= bgPainted.top) &&
+         (bgPainted.bottom >= bgDocH || scrollTop + viewH + slack <= bgPainted.bottom)){
+        return;
+      }
+
       const overscan = viewH;                       // a screen of slack above and below
       const top = Math.max(0, Math.round(scrollTop - overscan));
       const bottom = Math.min(bgDocH, Math.round(scrollTop + viewH + overscan));
       const height = Math.max(1, bottom - top);
-      const key = cssW + '|' + top + '|' + height + '|' + pages.length;
 
-      // Reallocating the canvas on every scroll frame is expensive, so only
-      // resize when the window's dimensions actually change; otherwise just
-      // move it and repaint.
+      const visible = pages.filter(e => !(e.y + e.h <= top || e.y >= bottom));
+
+      // Decode everything the new window needs BEFORE touching the canvas.
+      // Clearing first and filling in as decodes landed is exactly what made
+      // the page flash back to blank paper mid-scroll; the old pixels now
+      // simply stay put until the replacement is ready to paint in one shot.
+      const token = ++bgPaintToken;
+      const bitmaps = await Promise.all(visible.map((entry) => {
+        const pxW = Math.max(1, Math.round(cssW * ratio));
+        const pxH = Math.max(1, Math.round(entry.h * ratio));
+        const cached = bgCacheGet(entry.page.src + '@' + pxW + 'x' + pxH);
+        return cached || loadBgImage(entry.page.src, pxW, pxH);
+      }));
+      if(token !== bgPaintToken) return;            // a newer window superseded this one
+
       if(bgCanvas.width !== Math.round(cssW * ratio) || bgCanvas.height !== Math.round(height * ratio)){
         bgCanvas.width = Math.round(cssW * ratio);
         bgCanvas.height = Math.round(height * ratio);
         bgCanvas.style.width = cssW + 'px';
         bgCanvas.style.height = height + 'px';
+      } else {
+        bgCtx.setTransform(1, 0, 0, 1, 0, 0);
+        bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
       }
-      bgCanvas.style.transform = 'translateY(' + top + 'px)';
       bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      bgCtx.clearRect(0, 0, cssW, height);
       bgCtx.translate(0, -top);
+      visible.forEach((entry, i) => {
+        const img = bitmaps[i];
+        if(img) bgCtx.drawImage(img, 0, entry.y, cssW, entry.h);
+      });
+      bgCanvas.style.transform = 'translateY(' + top + 'px)';
+      bgPainted = { w: cssW, top, bottom, pages: pages.length };
 
-      const missing = [];
-      for(const entry of pages){
-        if(entry.y + entry.h <= top || entry.y >= bottom) continue;   // outside the window
-        const img = bgCacheGet(entry.page.src);
-        if(img){
-          bgCtx.drawImage(img, 0, entry.y, cssW, entry.h);
-        } else {
-          missing.push(entry.page.src);
-        }
-      }
-      bgLastKey = key;
-
-      // Anything not decoded yet is fetched off the critical path; when it
-      // lands we repaint (only if the viewport hasn't moved on since).
-      if(missing.length){
-        const pendingKey = key;
-        missing.forEach((src) => {
-          loadBgImage(src).then((img) => {
-            if(img && bgLastKey === pendingKey) scheduleBgDraw(true);
-          });
+      // Warm the pages just outside the painted window while the browser is
+      // idle, so the next repaint (when you scroll past the slack) is a pure
+      // blit with nothing to decode — no hitch, no blank moment.
+      const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 200));
+      idle(() => {
+        if(token !== bgPaintToken) return;
+        const ahead = pages.filter(e => (e.y >= bottom && e.y < bottom + viewH * 2) ||
+                                        (e.y + e.h <= top && e.y + e.h > top - viewH * 2));
+        ahead.slice(0, 4).forEach((entry) => {
+          loadBgImage(entry.page.src, Math.max(1, Math.round(cssW * ratio)), Math.max(1, Math.round(entry.h * ratio)));
         });
-      }
+      });
     }
     // Kept for the existing call sites: they tell us the document's current
     // size, the virtualiser works out what to actually paint.
     function renderBgLayer(cssWNow, cssHNow){
+      // Growing the page taller (which happens constantly while writing) does
+      // not change a single painted pixel of the background, so only force a
+      // full repaint when the width or the set of pages actually changed.
+      const structural = cssWNow !== bgW || (note.bgPages || []).length !== bgPainted.pages;
       bgW = cssWNow;
       bgDocH = Math.max(cssHNow, bgContentHeight(cssWNow));
-      scheduleBgDraw(true);
+      scheduleBgDraw(structural);
     }
     if(scrollEl) scrollEl.addEventListener('scroll', () => scheduleBgDraw(), { passive: true });
     renderBgLayer(wrap.clientWidth, cssH);
