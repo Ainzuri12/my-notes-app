@@ -266,10 +266,15 @@
   .canvas-wrap[data-bg="black"]{ background-color:#000000; background-image:none; }
   .canvas-wrap[data-bg="white"]{ background-color:#ffffff; background-image:none; }
   .canvas-wrap[data-bg="cream"]{ background-color:#f5efe0; background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 27px, rgba(0,0,0,0.08) 28px); }
-  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none;
+  /* Imported PDF/image pages sit ABOVE the wrapper's own paper background but
+     BELOW the ink. A negative z-index here looked right but painted the layer
+     behind the wrapper's opaque paper colour (the wrapper isn't a stacking
+     context, so -1 escaped up to an ancestor) — imports silently never showed.
+     Explicit 0/1/2 with the ink canvas positioned keeps the order honest. */
+  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:relative; z-index:1;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
-  #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:1; }
-  #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:-1; }
+  #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:2; }
+  #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:0; }
   .canvas-shell, .canvas-scroll, .canvas-wrap{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .page-seam{ position:absolute; left:0; right:0; height:1px; background: rgba(128,128,128,0.22); pointer-events:none; }
   .page-seam::after{ content:''; position:absolute; top:1px; left:0; right:0; height:10px; background: linear-gradient(to bottom, rgba(0,0,0,0.12), transparent); }
@@ -565,8 +570,11 @@
       <div class="sb-brand"><span class="dot"></span>ForgeNotes</div>
       <div style="display:flex; gap:2px;">
         <button class="icon-btn" id="backupBtn" title="Backup notes to a file"></button>
-        <button class="icon-btn" id="restoreBtn" title="Restore notes from a file"></button>
-        <input type="file" id="restoreFileInput" accept="application/json" style="display:none;" />
+        <button class="icon-btn" id="restoreBtn" title="Import a backup, PDF or image"></button>
+        <!-- No accept filter: iOS/iPadOS greys out valid files when a MIME
+             filter is set, which made this button feel dead. Validated in JS. -->
+        <input type="file" id="restoreFileInput" style="display:none;" />
+
         <button class="icon-btn" id="settingsBtn" title="Toggle theme"></button>
       </div>
     </div>
@@ -1058,6 +1066,152 @@
     };
     reader.readAsText(file);
   }
+
+  // ---------- importing a PDF / image as pages you can draw on ----------
+  // Shared by the sidebar Import button (main page) and the Import button in
+  // the drawing toolbar, so both behave identically. Every page ends up as a
+  // decoded PNG data URL plus its natural size: decoding here (rather than
+  // storing the raw file bytes) means a format the canvas can't actually
+  // draw — HEIC being the big one on iPhone/iPad — fails loudly right now
+  // instead of silently importing a page that never appears.
+  function fileToDataUrl(file){
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+  function fileExt(file){
+    const name = (file && file.name ? file.name : '').toLowerCase();
+    const dot = name.lastIndexOf('.');
+    return dot === -1 ? '' : name.slice(dot + 1);
+  }
+  // iOS often hands over a File with an empty or generic `type`, so fall back
+  // to the filename extension before deciding this isn't importable.
+  function fileKind(file){
+    const type = (file && file.type) || '';
+    const ext = fileExt(file);
+    if(type === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if(type.startsWith('image/') || ['png','jpg','jpeg','gif','webp','bmp','heic','heif','avif','tif','tiff'].includes(ext)) return 'image';
+    if(type === 'application/json' || ext === 'json') return 'json';
+    return 'other';
+  }
+  // Decodes an image file into a canvas-backed PNG page. Tries createImageBitmap
+  // first (it can decode HEIC on Safari where <img> can't), then falls back to
+  // an <img> decode. Rejects if neither works, so the caller can say why.
+  async function imageFileToPage(file){
+    try{
+      if(window.createImageBitmap){
+        const bitmap = await createImageBitmap(file);
+        const off = document.createElement('canvas');
+        off.width = bitmap.width; off.height = bitmap.height;
+        off.getContext('2d').drawImage(bitmap, 0, 0);
+        if(bitmap.close) bitmap.close();
+        return { src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height };
+      }
+    }catch(err){ /* fall through to the <img> path below */ }
+    const src = await fileToDataUrl(file);
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('decode failed'));
+      el.src = src;
+    });
+    const w = img.naturalWidth || 0, h = img.naturalHeight || 0;
+    if(!w || !h) throw new Error('decode failed');
+    const off = document.createElement('canvas');
+    off.width = w; off.height = h;
+    off.getContext('2d').drawImage(img, 0, 0);
+    return { src: off.toDataURL('image/png'), naturalW: w, naturalH: h };
+  }
+  let pdfJsLoadPromise = null;
+  function ensurePdfJsLoaded(){
+    if(window.pdfjsLib) return Promise.resolve();
+    if(pdfJsLoadPromise) return pdfJsLoadPromise;
+    pdfJsLoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+      script.onload = () => {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        resolve();
+      };
+      script.onerror = () => { pdfJsLoadPromise = null; reject(new Error('offline-pdf')); };
+      document.head.appendChild(script);
+    });
+    return pdfJsLoadPromise;
+  }
+  async function filePagesFromFile(file){
+    const kind = fileKind(file);
+    if(kind === 'pdf'){
+      try{
+        await ensurePdfJsLoaded();
+      }catch(err){
+        throw new Error('PDF import needs an internet connection the first time. Connect and try again, or import the pages as images.');
+      }
+      const buf = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
+      const pages = [];
+      for(let i = 1; i <= pdf.numPages; i++){
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
+        const off = document.createElement('canvas');
+        off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
+        await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
+        pages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
+      }
+      if(!pages.length) throw new Error('That PDF has no pages in it.');
+      return pages;
+    }
+    if(kind === 'image'){
+      try{
+        return [await imageFileToPage(file)];
+      }catch(err){
+        throw new Error('This device can\u2019t read that image format (HEIC photos often need converting to JPEG first). Try a PNG, JPEG or PDF.');
+      }
+    }
+    throw new Error('Please choose a PDF, an image, or a ForgeNotes backup .json.');
+  }
+  // Creates a brand new drawing note holding the imported pages and opens it.
+  // This is what the sidebar Import button does when no note is open.
+  async function importFileAsNewNote(file){
+    let pages;
+    try{
+      pages = await filePagesFromFile(file);
+    }catch(err){
+      alert(err.message || 'Could not import that file.');
+      return;
+    }
+    checkpoint();
+    const note = {
+      id: uid(), title: file.name ? file.name.replace(/\.[^.]+$/, '') : '', body: '', mode: 'draw',
+      drawing: null, canvasBg: 'grid',
+      paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' },
+      canvasHeight: DEFAULT_CANVAS_HEIGHT,
+      bgPages: pages,
+      icon: ICON_CYCLE[0], tags: [], folderId: nav === 'folder' ? activeFolderId : null,
+      pinned: false, trashed: false, trashedAt: null,
+      createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    notes.unshift(note);
+    activeId = note.id; mobileShowingMain = true; previewMode = false; folderPickerOpen = false;
+    commitMutation(); renderAll();
+    showToast(pages.length > 1 ? `Imported ${pages.length} pages` : 'Imported');
+  }
+  // Sidebar Import: a .json backup restores notes, anything else is imported as
+  // pages — into the note you're currently in, or a new note if you're not.
+  async function handleSidebarImport(file){
+    if(fileKind(file) === 'json'){ restoreFromFile(file); return; }
+    const openNote = activeId ? notes.find(n => n.id === activeId && !n.trashed) : null;
+    const handoff = window.forgeImportIntoOpenNote;
+    if(openNote && (openNote.mode || 'text') === 'draw' && handoff && handoff.noteId === openNote.id){
+      await handoff.run(file);
+      return;
+    }
+    await importFileAsNewNote(file);
+  }
+
+
 
   // ---------- undo/redo ----------
   // Like clone(), but only deep-copies the ONE note being mutated (by id)
@@ -1620,7 +1774,7 @@
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
           <button class="ct-btn" id="importBtn" title="Import a PDF or image to work on top of">${ICONS.upload}<span class="ct-label">Import</span></button>
-          <input type="file" id="importFileInput" accept="application/pdf,image/*" style="display:none;" />
+          <input type="file" id="importFileInput" style="display:none;" />
           <div class="ct-sep"></div>
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
@@ -1804,66 +1958,16 @@
     // Importing a PDF/image (a past paper, a worksheet, etc.) turns each
     // page into a background reference page you can draw on top of — the
     // canvas grows to fit if the imported content is taller than what's
-    // there already.
-    function fileToDataUrl(file){
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-    }
-    function naturalSizeOf(src){
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 });
-        img.onerror = () => resolve({ w: 1, h: 1 });
-        img.src = src;
-      });
-    }
-    let pdfJsLoadPromise = null;
-    function ensurePdfJsLoaded(){
-      if(window.pdfjsLib) return Promise.resolve();
-      if(pdfJsLoadPromise) return pdfJsLoadPromise;
-      pdfJsLoadPromise = new Promise((resolve, reject) => {
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-        script.onload = () => {
-          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-          resolve();
-        };
-        script.onerror = () => reject(new Error('Could not load PDF support'));
-        document.head.appendChild(script);
-      });
-      return pdfJsLoadPromise;
-    }
+    // there already. Decoding/paging lives in filePagesFromFile() up top so
+    // the sidebar Import button behaves identically.
     async function importFileAsBackground(file){
       const cssW = wrap.clientWidth;
-      const newPages = [];
+      let newPages;
       try{
-        if(file.type === 'application/pdf'){
-          await ensurePdfJsLoaded();
-          const buf = await file.arrayBuffer();
-          const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-          for(let i = 1; i <= pdf.numPages; i++){
-            const page = await pdf.getPage(i);
-            const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
-            const off = document.createElement('canvas');
-            off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
-            await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
-            newPages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
-          }
-        } else if(file.type.startsWith('image/')){
-          const src = await fileToDataUrl(file);
-          const dims = await naturalSizeOf(src);
-          newPages.push({ src, naturalW: dims.w, naturalH: dims.h });
-        } else {
-          alert('Please choose a PDF or image file.');
-          return;
-        }
+        newPages = await filePagesFromFile(file);
       }catch(err){
         console.error('Import failed', err);
-        alert('Could not import that file.');
+        alert(err && err.message ? err.message : 'Could not import that file.');
         return;
       }
 
@@ -1877,7 +1981,11 @@
       }
       note.updatedAt = Date.now();
       commitMutation();
+      showToast(newPages.length > 1 ? `Imported ${newPages.length} pages` : 'Imported');
     }
+    // Lets the sidebar Import button drop a file straight into the note that's
+    // currently open, instead of creating a separate one.
+    window.forgeImportIntoOpenNote = { noteId: note.id, run: (file) => importFileAsBackground(file) };
     const importBtn = document.getElementById('importBtn');
     const importFileInput = document.getElementById('importFileInput');
     if(importBtn && importFileInput){
@@ -1889,6 +1997,7 @@
         if(file) await importFileAsBackground(file);
       });
     }
+
 
     // Copies whatever's CURRENTLY on the canvas into a same-size offscreen
     // canvas, synchronously — used whenever the canvas needs resizing
@@ -3044,11 +3153,12 @@
   document.getElementById('restoreBtn').innerHTML = ICONS.upload;
   const restoreFileInput = document.getElementById('restoreFileInput');
   document.getElementById('restoreBtn').addEventListener('click', () => restoreFileInput.click());
-  restoreFileInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    if(file) restoreFromFile(file);
+  restoreFileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
     restoreFileInput.value = '';
+    if(file) await handleSidebarImport(file);
   });
+
 
   document.getElementById('showNewFolder').addEventListener('click', () => {
     const row = document.getElementById('newFolderRow');
