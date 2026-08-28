@@ -1774,7 +1774,6 @@
           <div class="ct-sep"></div>
           <button class="ct-btn" id="bgBtn" title="Background">${ICONS.palette}<span class="ct-label">Paper</span></button>
           <button class="ct-btn" id="importBtn" title="Import a PDF or image to work on top of">${ICONS.upload}<span class="ct-label">Import</span></button>
-          <input type="file" id="importFileInput" style="display:none;" />
           <div class="ct-sep"></div>
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
@@ -1791,7 +1790,16 @@
     const wrap = document.getElementById('canvasWrapEl');
     const scrollEl = document.getElementById('canvasScroll');
     const ratio = window.devicePixelRatio || 1;
-    let cssH = note.canvasHeight || DEFAULT_CANVAS_HEIGHT;
+    const initialWidth = wrap.clientWidth;
+    const importedHeight = (note.bgPages || []).reduce((sum, page) => {
+      if(!page.naturalW || !page.naturalH) return sum;
+      return sum + (page.naturalH / page.naturalW) * initialWidth;
+    }, 0);
+    // Size to the complete imported document before the first paint. Keeping
+    // the default height here clipped later PDF pages until another canvas
+    // resize happened, which made them seem to load only after scrolling.
+    let cssH = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, importedHeight);
+    note.canvasHeight = cssH;
 
     function sizeCanvasTo(newCssH, preserveOldCssH){
       const cssW = wrap.clientWidth;
@@ -1945,10 +1953,15 @@
       bgCanvas.style.height = cssHNow + 'px';
       bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
       bgCtx.clearRect(0, 0, cssWNow, cssHNow);
+      const pages = note.bgPages || [];
+      // Decode every imported page immediately and in parallel. Loading one
+      // page at a time made long PDFs appear only as the user scrolled down.
+      const images = await Promise.all(pages.map(page => loadBgImage(page.src)));
       let y = 0;
-      for(const page of (note.bgPages || [])){
+      for(let index = 0; index < pages.length; index++){
+        const page = pages[index];
         const h = (page.naturalH / page.naturalW) * cssWNow;
-        const img = await loadBgImage(page.src);
+        const img = images[index];
         if(img) bgCtx.drawImage(img, 0, y, cssWNow, h);
         y += h;
       }
@@ -1987,14 +2000,19 @@
     // currently open, instead of creating a separate one.
     window.forgeImportIntoOpenNote = { noteId: note.id, run: (file) => importFileAsBackground(file) };
     const importBtn = document.getElementById('importBtn');
-    const importFileInput = document.getElementById('importFileInput');
-    if(importBtn && importFileInput){
-      importBtn.addEventListener('click', (e) => { e.stopPropagation(); importFileInput.click(); });
-      importFileInput.addEventListener('click', (e) => e.stopPropagation());
-      importFileInput.addEventListener('change', async (e) => {
-        const file = e.target.files && e.target.files[0];
-        importFileInput.value = '';
-        if(file) await importFileAsBackground(file);
+    if(importBtn){
+      // Reuse the persistent top-level picker. A hidden input created inside
+      // the re-rendered canvas toolbar was unreliable on iPad/Safari and could
+      // be detached before its change event fired.
+      importBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const picker = document.getElementById('restoreFileInput');
+        if(!picker) return;
+        picker.value = '';
+        if(typeof picker.showPicker === 'function'){
+          try { picker.showPicker(); return; } catch(err) { /* use click fallback */ }
+        }
+        picker.click();
       });
     }
 
