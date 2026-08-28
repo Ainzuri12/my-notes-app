@@ -1,6 +1,6 @@
 {
-  "name": "Notes",
-  "short_name": "Notes",
+  "name": "ForgeNotes",
+  "short_name": "ForgeNotes",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

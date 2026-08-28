@@ -1,4 +1,4 @@
-// Service worker for the Notes app.
+// Service worker for the ForgeNotes app.
 //
 // The app shell (this page) is served network-first: whenever there's a
 // connection, the latest deployed version is fetched and used immediately
@@ -9,7 +9,7 @@
 // revalidate instead, since those essentially never change and don't need
 // to be fetched fresh on every load. Since the app's actual data lives in
 // IndexedDB (not here), this cache only ever needs to hold the shell.
-const CACHE_NAME = 'ipad-notes-shell-v1';
+const CACHE_NAME = 'forgenotes-shell-v1';
 const APP_SHELL = [
   './',
   './index.html',
