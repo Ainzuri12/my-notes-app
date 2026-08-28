@@ -1963,7 +1963,19 @@
 
     let drawing = false, lastX = 0, lastY = 0;
     let smoothX = 0, smoothY = 0; // running exponential-average position, tames finger jitter
-    function pos(e){ const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+    // getBoundingClientRect() forces a layout flush. Calling it once per
+    // *coalesced* pointer sample (dozens per frame with a stylus) was the
+    // single biggest source of writing lag, so the rect is cached for the
+    // duration of a stroke and invalidated whenever it could actually move.
+    let rectCache = null;
+    function invalidateRect(){ rectCache = null; }
+    function canvasRect(){ return rectCache || (rectCache = canvas.getBoundingClientRect()); }
+    canvas.addEventListener('pointerdown', invalidateRect, { capture: true });
+    window.addEventListener('resize', invalidateRect);
+    window.addEventListener('orientationchange', invalidateRect);
+    if(scrollEl) scrollEl.addEventListener('scroll', invalidateRect, { passive: true });
+    function pos(e){ const r = canvasRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+
 
     // Stamping filled circles along the path (instead of stroking a fixed-
     // width line) is what lets the line's width flow continuously with
@@ -2119,9 +2131,19 @@
     // end, optionally extended by a speculative predicted point) onto the
     // overlay canvas with the true end-taper applied. Cheap and safe to
     // call every frame since it only ever touches the small tail window.
+    // Only the region the previous frame actually painted needs clearing.
+    // Wiping the whole overlay every move meant clearing a full-page,
+    // device-pixel canvas 60+ times a second for a few hundred px of ink.
+    let tailBox = null;
+    function clearTail(){
+      if(!predCtx) return;
+      if(!tailBox){ clearPredictive(); return; }
+      predCtx.clearRect(tailBox.x0, tailBox.y0, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0);
+      tailBox = null;
+    }
     function renderLiveTail(extraPt){
       if(!predCtx) return;
-      clearPredictive();
+      clearTail();
       if(strokePts.length < 1) return;
       const lastReal = strokePts[strokePts.length - 1];
       const total = lastReal.cum + (extraPt ? Math.hypot(extraPt.x - lastReal.x, extraPt.y - lastReal.y) : 0);
@@ -2134,6 +2156,16 @@
         const len = Math.hypot(a1.x - a0.x, a1.y - a0.y);
         all = [{ x: a0.x, y: a0.y, r: a0.r, cum: 0 }, { x: a1.x, y: a1.y, r: a1.r, cum: len }];
       }
+      // Track what we're about to paint so the next frame can clear just this.
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for(const p of all){
+        const pad = Math.max(p.r, 1) * 2 + 4;
+        if(p.x - pad < x0) x0 = p.x - pad;
+        if(p.y - pad < y0) y0 = p.y - pad;
+        if(p.x + pad > x1) x1 = p.x + pad;
+        if(p.y + pad > y1) y1 = p.y + pad;
+      }
+      tailBox = { x0, y0, x1, y1 };
       predCtx.globalCompositeOperation = 'source-over';
       predCtx.fillStyle = drawState.color;
       if(all.length === 1){
@@ -2148,6 +2180,23 @@
         stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb, strokeDash === 'solid' ? null : a.cum);
       }
     }
+
+    // The tail is re-rendered at most once per animation frame. Pointer
+    // events can fire far more often than the display refreshes, and every
+    // extra render was wasted work that pushed the visible ink behind the pen.
+    let tailRaf = 0, pendingExtra = null;
+    function scheduleTail(extraPt){
+      pendingExtra = extraPt;
+      if(tailRaf) return;
+      tailRaf = requestAnimationFrame(() => { tailRaf = 0; renderLiveTail(pendingExtra); });
+    }
+    function flushTail(){
+      if(!tailRaf) return;
+      cancelAnimationFrame(tailRaf);
+      tailRaf = 0;
+      renderLiveTail(null);
+    }
+
 
     const eraserCursor = document.getElementById('eraserCursor');
     updateEraserCursorSize();
@@ -2418,7 +2467,7 @@
         const [px, py] = pos(predicted[0]);
         extraPt = { x: px, y: py, r: strokePts[strokePts.length - 1].r };
       }
-      renderLiveTail(extraPt);
+      scheduleTail(extraPt);
       moveEraserCursor(lastX, lastY);
     });
 
@@ -2431,7 +2480,14 @@
       }
       activePointers.delete(e.pointerId);
       hideEraserCursor();
-      if(!(gestureMode === 'draw' && drawing && (strokeIsHighlighter || lassoActive()))) clearPredictive();
+      const keepLive = gestureMode === 'draw' && drawing && (strokeIsHighlighter || lassoActive());
+      // Make sure no frame scheduled mid-stroke lands after we've finished.
+      if(tailRaf){
+        cancelAnimationFrame(tailRaf); tailRaf = 0;
+        if(keepLive && !lassoActive()) renderLiveTail(null);
+      }
+      if(!keepLive) clearPredictive();
+
       if(gestureMode === 'scroll'){
         if(activePointers.size === 0) gestureMode = 'idle';
         return;
