@@ -778,6 +778,12 @@
   let query = '';
   let previewMode = false;
   let saveTimer = null;
+  // Set true for the duration of an in-progress pen/finger stroke (see the
+  // canvas pointerdown/up handlers). scheduleSave() checks this so a mid-
+  // stroke commitMutation() (e.g. the page growing taller while you write)
+  // never lands an IndexedDB write while the pointer is still down — it
+  // just re-arms the timer and fires once the stroke actually lifts.
+  let strokeInProgress = false;
   let mobileShowingMain = false;
   let undoStack = [], redoStack = [];
   let checkpointed = false;
@@ -995,7 +1001,18 @@
   }
   async function persistFolders(){ try{ await idbSet(STORE_PREFIX+'folders', folders); }catch(e){ console.error(e); } }
   async function persistTheme(){ try{ await idbSet(STORE_PREFIX+'theme', theme); }catch(e){ console.error(e); } }
-  function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(persistNotes, 350); }
+  // 900ms (rather than firing right after every stroke) means a burst of
+  // quick pen lifts while writing normally only ever produces one
+  // IndexedDB write, not one per stroke. If a stroke is still in progress
+  // when the timer fires (a mid-stroke canvas grow can trigger this),
+  // don't write yet — just re-arm for another 900ms and check again.
+  function scheduleSave(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function fire(){
+      if(strokeInProgress){ saveTimer = setTimeout(fire, 900); return; }
+      persistNotes();
+    }, 900);
+  }
 
   // ---------- backup / restore to a real file ----------
   // A plain <a download> link on iOS Safari saves silently to a fixed
@@ -1154,11 +1171,18 @@
       const pages = [];
       for(let i = 1; i <= pdf.numPages; i++){
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
+        const viewport = page.getViewport({ scale: 1.6 }); // still crisp enough for text/lines drawn on top
         const off = document.createElement('canvas');
         off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
         await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
-        pages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
+        // These pages are a fixed, never-edited background sitting *under*
+        // the (separately stored, transparent) ink layer, so they don't
+        // need PNG's lossless/alpha support — a PDF page has no
+        // transparency of its own. JPEG at a high quality setting comes
+        // out roughly 10x smaller per page than 2x-scale PNG, which is
+        // what made a many-page import balloon note.bgPages and, with it,
+        // the size of every undo snapshot and IndexedDB write.
+        pages.push({ src: off.toDataURL('image/jpeg', 0.82), naturalW: off.width, naturalH: off.height });
       }
       if(!pages.length) throw new Error('That PDF has no pages in it.');
       return pages;
@@ -1225,8 +1249,15 @@
   // next stroke. Passing noteId lets the hot path (drawing) skip that cost;
   // omitting it keeps the safe, general behavior for rarer, non-hot-path
   // mutations (trashing/pinning/moving a note from a list, etc.).
+  // Shallow-copies the target note instead of clone()'s JSON round-trip.
+  // This is only ever called from the drawing hot path (checkpoint(note.id)
+  // in saveDrawing()), where the only fields that ever change are drawing/
+  // updatedAt/canvasHeight — all reassigned wholesale, never mutated
+  // in-place — so a shallow {...n} is exactly as safe for undo as a deep
+  // clone here, without re-serializing the note's ink PNG (and any
+  // imported PDF background pages) on every single pen lift.
   function snapshotNotesExcept(noteId){
-    return notes.map(n => (n.id === noteId ? clone(n) : n));
+    return notes.map(n => (n.id === noteId ? {...n} : n));
   }
   function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
   function commitMutation(){ checkpointed=false; scheduleSave(); }
@@ -2485,11 +2516,30 @@
     function showEraserCursor(){ if(eraserCursor && drawState.erasing) eraserCursor.classList.add('show'); }
     function hideEraserCursor(){ if(eraserCursor) eraserCursor.classList.remove('show'); }
 
+    // canvas.toBlob()'s PNG encode runs off the main JS thread in most
+    // browsers, unlike the old synchronous canvas.toDataURL() call — which
+    // blocked input for however long a full re-encode of the entire ink
+    // canvas took, worst case a many-thousand-px-tall page right after a
+    // multi-page PDF import. FileReader then base64-encodes the resulting
+    // blob, also without blocking. A token guards against two saves
+    // finishing out of order (e.g. two quick pen lifts) so a slower,
+    // now-stale encode can never clobber a newer one that finished first.
+    let drawingSaveToken = 0;
     function saveDrawing(){
       checkpoint(note.id);
-      note.drawing = canvas.toDataURL('image/png');
       note.updatedAt = Date.now();
-      commitMutation();
+      const targetNote = note;
+      const myToken = ++drawingSaveToken;
+      canvas.toBlob((blob) => {
+        if(!blob) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          if(myToken !== drawingSaveToken) return; // superseded by a newer stroke's save
+          targetNote.drawing = reader.result;
+          commitMutation();
+        };
+        reader.readAsDataURL(blob);
+      }, 'image/png');
     }
 
     // Gesture routing: pen/stylus and mouse always draw. A bare finger touch
@@ -2544,6 +2594,14 @@
       if(document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === 'function'){
         document.activeElement.blur();
       }
+      // A stray text selection (see the selectstart handler below — this
+      // is the belt to that suspenders) can otherwise survive onto the
+      // canvas: iOS in particular can leave a blue selection handle
+      // sitting over the page, which then looks like it's "selecting"
+      // ink or blank canvas that was never actually selectable text.
+      // Starting a stroke always clears it.
+      const sel = window.getSelection && window.getSelection();
+      if(sel && sel.removeAllRanges) sel.removeAllRanges();
 
       if(looksLikePalm(e)) return;
 
@@ -2567,6 +2625,7 @@
         // Finger touch (in default mode), or a second finger, or Scroll mode
         // explicitly on — abandon any in-progress stroke and scroll instead.
         drawing = false;
+        strokeInProgress = false;
         gestureMode = 'scroll';
         primaryPointerId = null; primaryPointerType = null;
         scrollStartY = avgY();
@@ -2577,6 +2636,7 @@
 
       gestureMode = 'draw';
       drawing = true;
+      strokeInProgress = true;
       primaryPointerId = e.pointerId; primaryPointerType = e.pointerType;
       try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       const [x, y] = pos(e);
@@ -2770,7 +2830,7 @@
         return;
       }
       if(gestureMode === 'draw' && drawing){
-        drawing = false; gestureMode = 'idle';
+        drawing = false; strokeInProgress = false; gestureMode = 'idle';
         primaryPointerId = null; primaryPointerType = null;
         if(lassoActive()){
           if(lassoDragging){
@@ -3377,6 +3437,23 @@
     sidebarEl.classList.toggle('hide-mobile', mobileShowingMain && window.innerWidth <= 780);
   }
 
+
+  // Most of the app's chrome already has user-select:none in CSS, but that
+  // doesn't cover everything the browser will try to select on its own —
+  // e.g. iOS turning a slow pen/finger drag over the canvas or an empty
+  // area below the page into a text-selection gesture, which then shows
+  // native selection handles floating over content that was never
+  // actually selectable text. Rather than track down every element, just
+  // cancel selection globally except inside places text selection is
+  // actually meant to work (inputs, textareas, and anything explicitly
+  // marked selectable, like note titles/bodies and card text).
+  document.addEventListener('selectstart', (e) => {
+    const t = e.target;
+    const tag = t && t.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if(t && t.closest && t.closest('[contenteditable="true"], .body-preview, .card-title, .card-date')) return;
+    e.preventDefault();
+  });
 
   (async function init(){
     await loadState();
