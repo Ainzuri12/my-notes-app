@@ -366,7 +366,94 @@
     .print-area{ position:absolute; top:0; left:0; width:100%; padding:20px; color:#000; }
   }
   .print-area{ display:none; }
+  /* ---------- Freenotes-style shell ---------- */
+  :root{
+    --bg: #000000;
+    --sidebar-bg: #131316;
+    --panel: #1c1c1f;
+    --card: #161618;
+    --border: #262629;
+    --accent: #3b6ef5;
+  }
+  .app{ padding: 8px; gap: 8px; grid-template-columns: 268px 1fr; background: var(--bg); }
+  .app.focus-mode{ grid-template-columns: 0px 1fr; gap:0; }
+
+  .sidebar{ border: 1px solid var(--border); border-radius: 22px; overflow: hidden; }
+  .sb-head{ padding: calc(14px + env(safe-area-inset-top)) 16px 10px 16px; }
+  .sb-nav{ padding: 4px 10px 0 10px; gap: 2px; }
+  .sb-item{ padding: 11px 12px; border-radius: 12px; font-size: 14px; }
+  .folder-row{ padding: 10px 12px 10px 12px; border-radius: 12px; font-size: 14px; }
+  .sb-bottom{ border-top: 1px solid var(--border); }
+
+  .workspace{ grid-column: 2; display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .app-header{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding: calc(20px + env(safe-area-inset-top)) calc(26px + env(safe-area-inset-right)) 10px 26px;
+  }
+  .app-header.hidden{ display:none; }
+  .hdr-title{ margin:0; font-size:30px; font-weight:800; letter-spacing:-.6px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hdr-actions{ display:flex; align-items:center; gap:10px; flex-shrink:0; }
+  .hdr-search{ display:flex; align-items:center; gap:8px; background: var(--panel); border:1px solid var(--border);
+    border-radius: 999px; padding: 9px 16px; width: 210px; max-width: 40vw; }
+  .hdr-search svg{ width:15px; height:15px; color: var(--text-tertiary); flex-shrink:0; }
+  .hdr-search input{ border:none; background:transparent; outline:none; color: var(--text); font-size:13.5px; width:100%; min-width:0; }
+  .hdr-search input::placeholder{ color: var(--text-tertiary); }
+  .hdr-plus{ background: var(--panel); border:1px solid var(--border); color: var(--text); cursor:pointer;
+    width:40px; height:40px; border-radius:999px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  .hdr-plus:hover{ background: var(--hover); }
+  .hdr-plus svg{ width:19px; height:19px; }
+  @media (max-width: 520px){
+    .hdr-title{ font-size:22px; }
+    .hdr-search{ width:46px; padding: 9px 12px; }
+  }
+  @media (max-width: 780px){
+    .app{ grid-template-columns: 1fr; padding: 6px; }
+    .workspace{ display:none; grid-column:1; }
+    .workspace:has(.main.show-mobile){ display:flex; }
+  }
+
+  .grid-wrap{ padding: 4px calc(26px + env(safe-area-inset-right)) calc(60px + env(safe-area-inset-bottom)) 26px; }
+  .grid-head{ display:none; }
+  .tab-row{ display:inline-flex; gap:2px; border:none; background: var(--panel); border-radius: 999px;
+    padding: 3px; margin: 6px 0 22px 0; }
+  .tab-btn{ padding: 8px 18px; border-radius: 999px; font-size: 13.5px; border:none; margin:0; color: var(--text-secondary); }
+  .tab-btn.active{ background: var(--active); color: var(--text); border:none; }
+
+  .note-grid{ grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 22px 20px; }
+  .note-card{ background: transparent; border: none; border-radius: 0; overflow: visible; }
+  .note-card:hover{ transform: translateY(-3px); border:none; }
+  .card-thumb{ aspect-ratio: 3/4; border-radius: 12px; overflow:hidden; background:#101012;
+    border: 1px solid var(--border); box-shadow: 0 8px 22px rgba(0,0,0,0.45); }
+  .card-meta{ padding: 10px 2px 0 2px; gap: 3px; align-items:center; text-align:center; }
+  .card-title{ font-size:13px; font-weight:600; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+  .card-sub{ justify-content:center; }
+  .card-date{ font-size:11px; }
+  .card-del{ top:7px; left:7px; }
+  .card-star{ top:7px; right:7px; }
+
+  /* paper covers for text notes */
+  .paper-thumb{ padding:0; background:#c9a982; }
+  .paper-cover{ position:relative; width:100%; height:100%; display:flex;
+    background: linear-gradient(120deg, #d6b58c 0%, #c9a882 55%, #bd9b74 100%); }
+  .paper-spine{ position:absolute; top:0; bottom:0; left:0; width:7px; opacity:.55; }
+  .paper-cover::after{ content:''; position:absolute; inset:0;
+    background: linear-gradient(to right, rgba(0,0,0,0.22), transparent 22%, transparent 88%, rgba(0,0,0,0.12)); pointer-events:none; }
+  .paper-body{ flex:1; padding: 16px 14px 14px 20px; overflow:hidden; }
+  .pp-body{ font-size:10.5px; line-height:1.6; color: rgba(38,26,14,0.72);
+    overflow:hidden; display:-webkit-box; -webkit-line-clamp:9; -webkit-box-orient:vertical; }
+  .pp-lines{ display:flex; flex-direction:column; gap:12px; padding-top:6px; }
+  .pp-lines i{ display:block; height:1px; background: rgba(60,42,22,0.18); }
+  .pp-lines i:nth-child(2){ width:78%; }
+  .pp-lines i:nth-child(4){ width:64%; }
+
+  .create-card .create-thumb{ background: var(--card); border: 1px dashed #3a3a40; box-shadow:none;
+    display:flex; align-items:center; justify-content:center; }
+  .create-card .create-plus{ display:flex; width:46px; height:46px; border-radius:50%; background: var(--active);
+    align-items:center; justify-content:center; color: var(--text); }
+  .create-card .create-plus svg{ width:22px; height:22px; }
+  .create-card:hover .create-thumb{ border-color: var(--accent); }
 </style>
+
 
 <div class="app" id="app">
   <aside class="sidebar" id="sidebar">
@@ -380,10 +467,8 @@
       </div>
     </div>
 
-    <div class="sb-search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input id="searchInput" placeholder="Search" />
-    </div>
+
+
 
     <div class="sb-nav">
       <div class="sb-item" data-nav="home"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg><span class="lbl">Home</span></div>
@@ -420,10 +505,27 @@
     </div>
   </aside>
 
-  <main class="main" id="mainEl">
-    <div class="loading">Loading your workspace…</div>
-  </main>
+  <div class="workspace" id="workspace">
+
+    <header class="app-header" id="appHeader">
+      <h1 class="hdr-title" id="hdrTitle">Notes</h1>
+      <div class="hdr-actions">
+        <div class="hdr-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="searchInput" placeholder="Search" />
+        </div>
+        <button class="hdr-plus" id="hdrNewBtn" title="New note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </div>
+    </header>
+    <main class="main" id="mainEl">
+      <div class="loading">Loading your workspace…</div>
+    </main>
+  </div>
+
 </div>
+
 
 <div class="print-area" id="printArea"></div>
 <div class="toast" id="saveToast"><span class="dot"></span><span id="saveToastText">Saved</span></div>
@@ -802,17 +904,12 @@
     if(nav === 'gallery') list = list.filter(n => (n.mode||'text') === 'draw');
     if(nav === 'folder') list = list.filter(n => n.folderId === activeFolderId);
     if(nav === 'notes' || nav === 'home'){
-      if(tab === 'favorites') list = list.filter(n => n.pinned);
-      else if(tab === 'unfiled') list = list.filter(n => !n.folderId);
-      // 'recents' and 'all' both show everything, recents just sorts differently
+      if(tab === 'whiteboard') list = list.filter(n => (n.mode||'text') === 'draw');
+      else if(tab === 'notes') list = list.filter(n => (n.mode||'text') !== 'draw');
     }
-    if((nav === 'notes' || nav === 'home') && tab === 'recents'){
-      list = list.slice().sort((a,b)=>b.updatedAt-a.updatedAt).slice(0, 12);
-    } else {
-      list = list.slice().sort((a,b)=>b.updatedAt-a.updatedAt);
-    }
-    return list;
+    return list.slice().sort((a,b)=>b.updatedAt-a.updatedAt);
   }
+
 
   // ---------- sidebar ----------
   function renderSidebar(){
@@ -875,16 +972,18 @@
       const bgColor = {'dark-dot':'#1c1c1e','light-dot':'#ffffff','black':'#000000','white':'#ffffff','cream':'#f5efe0'}[bg] || '#1c1c1e';
       return `<div class="card-thumb" style="background:${bgColor};"><div class="draw-empty">${ICONS.pen}</div></div>`;
     }
-    const title = n.title && n.title.trim() ? escapeHtml(n.title) : (n.icon || '📝');
     const bodyPreview = (n.body||'').trim();
-    return `<div class="card-thumb" style="background: linear-gradient(155deg, ${hexToRgba(accent,0.16)}, #17171a 65%);">
-      <div class="text-thumb">
-        <div class="tt-icon">${n.icon||'📝'}</div>
-        <div class="tt-title">${title}</div>
-        ${bodyPreview ? `<div class="tt-body">${escapeHtml(bodyPreview)}</div>` : ''}
+    const accentTint = hexToRgba(accent, 0.5);
+    return `<div class="card-thumb paper-thumb">
+      <div class="paper-cover">
+        <span class="paper-spine" style="background:${accentTint};"></span>
+        <div class="paper-body">
+          ${bodyPreview ? `<div class="pp-body">${escapeHtml(bodyPreview)}</div>` : `<div class="pp-lines"><i></i><i></i><i></i><i></i><i></i></div>`}
+        </div>
       </div>
     </div>`;
   }
+
 
   function noteCard(n){
     const folder = folderById(n.folderId);
@@ -904,39 +1003,50 @@
   }
 
   function gridTitle(){
-    if(nav === 'home') return 'Home';
+    if(nav === 'home') return 'Unfiled';
     if(nav === 'gallery') return 'Gallery';
     if(nav === 'folder'){ const f = folderById(activeFolderId); return f ? f.name : 'Folder'; }
-    return 'All Notes';
+    return 'Notes';
+  }
+
+  function setHeader(title, show){
+    const hdr = document.getElementById('appHeader');
+    const t = document.getElementById('hdrTitle');
+    if(t) t.textContent = title;
+    if(hdr) hdr.classList.toggle('hidden', !show);
   }
 
   function renderGrid(){
     const list = currentNoteSet();
     const showTabs = nav === 'home' || nav === 'notes';
-    const title = gridTitle();
+    setHeader(gridTitle(), true);
 
     mainEl.innerHTML = `
       <button class="mobile-back" id="backBtn">${ICONS.back}Menu</button>
       <div class="grid-scroll"><div class="grid-wrap">
-        <div class="grid-head">
-          <h1 class="grid-title">${escapeHtml(title)}</h1>
-          <button class="new-btn" id="newNoteBtn">${ICONS.plus}New</button>
-        </div>
         ${showTabs ? `
         <div class="tab-row">
-          <button class="tab-btn ${tab==='all'?'active':''}" data-tab="all">All Notes</button>
-          <button class="tab-btn ${tab==='recents'?'active':''}" data-tab="recents">Recents</button>
-          <button class="tab-btn ${tab==='favorites'?'active':''}" data-tab="favorites">Favorites</button>
-          <button class="tab-btn ${tab==='unfiled'?'active':''}" data-tab="unfiled">Unfiled</button>
-        </div>` : `<div style="height:22px;"></div>`}
-        ${list.length ? `<div class="note-grid">${list.map(noteCard).join('')}</div>` : renderEmptyGrid()}
+          <button class="tab-btn ${tab==='all'?'active':''}" data-tab="all">All</button>
+          <button class="tab-btn ${tab==='whiteboard'?'active':''}" data-tab="whiteboard">Whiteboard</button>
+          <button class="tab-btn ${tab==='notes'?'active':''}" data-tab="notes">Notes</button>
+        </div>` : `<div style="height:6px;"></div>`}
+        ${list.length ? `<div class="note-grid">
+          <div class="note-card create-card" id="newNoteBtn">
+            <div class="card-thumb create-thumb"><span class="create-plus">${ICONS.plus}</span></div>
+            <div class="card-meta"><div class="card-title">Create</div></div>
+          </div>
+          ${list.map(noteCard).join('')}
+        </div>` : renderEmptyGrid()}
       </div></div>
     `;
     mainEl.classList.toggle('show-mobile', mobileShowingMain);
 
+
     const backBtn = document.getElementById('backBtn');
     if(backBtn) backBtn.addEventListener('click', () => { mobileShowingMain = false; renderAll(); });
-    document.getElementById('newNoteBtn').addEventListener('click', () => createNote(nav === 'folder' ? activeFolderId : null));
+    const newBtn = document.getElementById('newNoteBtn');
+    if(newBtn) newBtn.addEventListener('click', () => createNote(nav === 'folder' ? activeFolderId : null));
+
     mainEl.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => { tab = b.dataset.tab; renderGrid(); }));
     mainEl.querySelectorAll('[data-open]').forEach(el => el.addEventListener('click', (e) => {
       if(e.target.closest('[data-quick-del]')) return;
@@ -963,16 +1073,19 @@
     if(!activeId){ renderGrid(); const eb = document.getElementById('emptyNewBtn'); if(eb) eb.addEventListener('click', () => createNote(nav==='folder'?activeFolderId:null)); return; }
     const note = notes.find(n => n.id === activeId && !n.trashed);
     if(!note){ activeId = null; renderGrid(); return; }
+    setHeader('', false);
     renderPage(note);
   }
 
+
   function renderTrashView(){
     const list = trashedNotes();
+    setHeader('Trash', true);
     mainEl.innerHTML = `
       <button class="mobile-back" id="backBtn">${ICONS.back}Menu</button>
       <div class="grid-scroll"><div class="grid-wrap" style="max-width:640px;">
-        <h1 class="grid-title" style="margin-bottom:16px;">Trash</h1>
         ${list.length ? `<div class="trash-banner">Items in trash stay until you delete them forever.</div>` : ''}
+
         ${list.length ? list.map(n => `
           <div class="trash-list-row">
             <span class="p-icon">${n.icon||'📄'}</span>
@@ -2282,6 +2395,7 @@
   newFolderInputEl.addEventListener('input', () => { newFolderAddBtn.disabled = !newFolderInputEl.value.trim(); });
   newFolderAddBtn.addEventListener('click', (e) => { e.stopPropagation(); addFolder(); });
   searchInputEl.addEventListener('input', e => { query = e.target.value; renderSidebar(); renderMain(); });
+  document.getElementById('hdrNewBtn').addEventListener('click', () => createNote(nav === 'folder' ? activeFolderId : null));
   window.addEventListener('resize', renderAll);
 
   function renderAll(){
@@ -2289,6 +2403,7 @@
     renderMain();
     sidebarEl.classList.toggle('hide-mobile', mobileShowingMain && window.innerWidth <= 780);
   }
+
 
   (async function init(){
     await loadState();
