@@ -918,7 +918,23 @@
   const settingsBtn = document.getElementById('settingsBtn');
 
   function uid(p){ return (p||'n_') + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
-  function clone(o){ return JSON.parse(JSON.stringify(o)); }
+  // A plain JSON.stringify+parse round-trip is the wrong tool once a note
+  // can hold multiple megabytes of base64 text (a drawing, or a multi-page
+  // PDF import's background pages): every single checkpoint() — including
+  // ones with nothing to do with drawing at all, like focusing the title
+  // field or pinning a note — was re-serializing and re-parsing that whole
+  // string for every note in the app, every time. Strings are immutable in
+  // JS, so there's no correctness reason to touch their contents at all;
+  // this clones the actual object/array *structure* (which is what
+  // undo/redo actually needs isolated) and just copies the reference for
+  // everything else, which is why this is safe and dramatically cheaper.
+  function clone(o){
+    if(o === null || typeof o !== 'object') return o;
+    if(Array.isArray(o)) return o.map(clone);
+    const out = {};
+    for(const k in o){ if(Object.prototype.hasOwnProperty.call(o, k)) out[k] = clone(o[k]); }
+    return out;
+  }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtDate(ts){ const d = new Date(ts); return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
   function hexToRgba(hex, a){ const h = hex.replace('#',''); const r=parseInt(h.substring(0,2),16), g=parseInt(h.substring(2,4),16), b=parseInt(h.substring(4,6),16); return `rgba(${r},${g},${b},${a})`; }
