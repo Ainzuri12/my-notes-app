@@ -461,6 +461,7 @@
   .note-card:hover{ transform: translateY(-3px); border:none; }
   .card-thumb{ aspect-ratio: 3/4; border-radius: 12px; overflow:hidden; background:#101012;
     border: 1px solid var(--border); box-shadow: 0 8px 22px rgba(0,0,0,0.45); }
+  .card-drawing-thumb{ display:block; width:100%; height:100%; }
   .card-meta{ padding: 10px 2px 0 2px; gap: 3px; align-items:center; text-align:center; }
   .card-title{ font-size:13px; font-weight:600; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .card-sub{ justify-content:center; }
@@ -904,6 +905,144 @@
   function fmtDate(ts){ const d = new Date(ts); return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
   function hexToRgba(hex, a){ const h = hex.replace('#',''); const r=parseInt(h.substring(0,2),16), g=parseInt(h.substring(2,4),16), b=parseInt(h.substring(4,6),16); return `rgba(${r},${g},${b},${a})`; }
 
+  // ---------- vector ink model ----------
+  // Ink is persisted as small, independent stroke objects. The points use a
+  // stable document coordinate system (note.canvasWidth); the current canvas
+  // width is only a render scale. This keeps a stroke cheap to append and
+  // prevents imported background bitmaps from entering the write path.
+  function normalizeStroke(stroke){
+    if(!stroke || !Array.isArray(stroke.points)) return null;
+    const points = [];
+    let cum = 0;
+    stroke.points.forEach((p, i) => {
+      if(!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) return;
+      const point = { x:+p.x, y:+p.y, r:Math.max(0.1, Number.isFinite(+p.r) ? +p.r : 1), cum:0 };
+      if(points.length) cum += Math.hypot(point.x - points[points.length-1].x, point.y - points[points.length-1].y);
+      point.cum = cum;
+      points.push(point);
+    });
+    if(!points.length) return null;
+    return {
+      id: stroke.id || uid('s_'),
+      tool: stroke.tool || 'pen',
+      color: stroke.color || '#111111',
+      alpha: Math.max(0.05, Math.min(1, stroke.alpha == null ? 1 : +stroke.alpha)),
+      straight: !!stroke.straight,
+      dash: stroke.dash || 'solid',
+      penSize: Number.isFinite(+stroke.penSize) ? +stroke.penSize : undefined,
+      points
+    };
+  }
+  function normalizeNote(note){
+    if(!note || typeof note !== 'object') return note;
+    // One-time compatibility bridge for the old flattened ink field. It is
+    // retained separately so new vector edits never overwrite it, while all
+    // new code uses strokes. Fresh notes have no legacyInk field.
+    if(note.drawing && !note.legacyInk) note.legacyInk = note.drawing;
+    delete note.drawing;
+    note.strokes = Array.isArray(note.strokes) ? note.strokes.map(normalizeStroke).filter(Boolean) : [];
+    note.vectorVersion = 2;
+    return note;
+  }
+  function normalizeNotes(list){ return (Array.isArray(list) ? list : []).map(normalizeNote).filter(Boolean); }
+  function noteHasInk(note){ return !!(note && ((note.strokes && note.strokes.length) || note.legacyInk)); }
+
+  function vectorHashNoise(x, y, k){
+    const v = Math.sin(x * 12.9898 + y * 78.233 + k * 37.719) * 43758.5453;
+    return v - Math.floor(v);
+  }
+  function vectorDashOn(stroke, cum){
+    const dash = stroke.dash || 'solid';
+    if(dash === 'solid') return true;
+    const size = Math.max(1, stroke.penSize || 5);
+    const unit = Math.max(6, size * (dash === 'dotted' ? 0.9 : 1.8));
+    const period = dash === 'dotted' ? unit * 2 : unit * 2.2;
+    const on = dash === 'dotted' ? unit * 0.55 : unit * 1.2;
+    return (cum % period) < on;
+  }
+  function vectorStampCircle(targetCtx, x, y, r, tool){
+    if(tool === 'pencil'){
+      const rad = Math.max(0.4, r);
+      const prevAlpha = targetCtx.globalAlpha;
+      for(let i = 0; i < 3; i++){
+        const a = vectorHashNoise(x, y, i) * Math.PI * 2;
+        const d = vectorHashNoise(y, x, i + 5) * rad * 0.75;
+        targetCtx.globalAlpha = prevAlpha * (0.3 + 0.45 * vectorHashNoise(x + i, y - i, 9));
+        targetCtx.beginPath();
+        targetCtx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, rad * (0.55 + 0.35 * vectorHashNoise(x, y, i + 2)), 0, Math.PI * 2);
+        targetCtx.fill();
+      }
+      targetCtx.globalAlpha = prevAlpha;
+      return;
+    }
+    targetCtx.beginPath();
+    targetCtx.arc(x, y, Math.max(0.4, r), 0, Math.PI * 2);
+    targetCtx.fill();
+  }
+  function vectorStampSegment(targetCtx, a, b, stroke){
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const steps = Math.max(1, Math.ceil(dist / 1.4));
+    for(let i = 1; i <= steps; i++){
+      const t = i / steps;
+      const cum = a.cum + dist * t;
+      if(!vectorDashOn(stroke, cum)) continue;
+      vectorStampCircle(targetCtx, a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t, a.r + (b.r-a.r)*t, stroke.tool);
+    }
+  }
+  function vectorEndRadius(stroke, r, distanceFromEnd){
+    if(stroke.tool !== 'pen' || stroke.straight) return r;
+    const t = Math.min(1, Math.max(0, distanceFromEnd) / 16);
+    return r * (0.18 + 0.82 * t);
+  }
+  function renderVectorStroke(targetCtx, stroke){
+    const pts = stroke && stroke.points;
+    if(!pts || !pts.length) return;
+    let renderPts = pts;
+    if(stroke.straight && pts.length > 1){
+      const first = pts[0], last = pts[pts.length - 1];
+      renderPts = [first, Object.assign({}, last, { cum:Math.hypot(last.x-first.x, last.y-first.y) })];
+    }
+    const total = renderPts[renderPts.length - 1].cum || 0;
+    targetCtx.save();
+    targetCtx.globalCompositeOperation = 'source-over';
+    targetCtx.globalAlpha = stroke.alpha == null ? 1 : stroke.alpha;
+    targetCtx.fillStyle = stroke.color || '#111111';
+    // The live engine stamps the touch-down point immediately. Replaying it
+    // explicitly avoids a tiny gap before the first sampled segment.
+    vectorStampCircle(targetCtx, renderPts[0].x, renderPts[0].y, renderPts[0].r, stroke.tool);
+    for(let i = 1; i < renderPts.length; i++){
+      const a = renderPts[i-1], b = renderPts[i];
+      const ra = vectorEndRadius(stroke, a.r, total - a.cum);
+      const rb = vectorEndRadius(stroke, b.r, total - b.cum);
+      vectorStampSegment(targetCtx, {x:a.x,y:a.y,r:ra,cum:a.cum}, {x:b.x,y:b.y,r:rb,cum:b.cum}, stroke);
+    }
+    targetCtx.restore();
+  }
+  function renderVectorStrokes(targetCtx, strokes){
+    const list = strokes || [];
+    const flat = list.some(stroke => stroke && ((stroke.alpha == null ? 1 : stroke.alpha) < 0.999 || stroke.tool === 'highlighter' || stroke.tool === 'pencil'));
+    let layer = null, layerCtx = null;
+    if(flat && targetCtx.canvas){
+      layer = document.createElement('canvas');
+      layer.width = targetCtx.canvas.width; layer.height = targetCtx.canvas.height;
+      layerCtx = layer.getContext('2d');
+    }
+    list.forEach(stroke => {
+      if(!stroke) return;
+      const translucent = (stroke.alpha == null ? 1 : stroke.alpha) < 0.999 || stroke.tool === 'highlighter' || stroke.tool === 'pencil';
+      if(!translucent || !layerCtx){ renderVectorStroke(targetCtx, stroke); return; }
+      layerCtx.setTransform(1, 0, 0, 1, 0, 0);
+      layerCtx.clearRect(0, 0, layer.width, layer.height);
+      layerCtx.setTransform(targetCtx.getTransform());
+      renderVectorStroke(layerCtx, Object.assign({}, stroke, { alpha:1 }));
+      targetCtx.save();
+      targetCtx.setTransform(1, 0, 0, 1, 0, 0);
+      targetCtx.globalAlpha = stroke.alpha == null ? 1 : stroke.alpha;
+      targetCtx.drawImage(layer, 0, 0);
+      targetCtx.restore();
+    });
+  }
+
   // ---------- persistence (on-device IndexedDB) ----------
   // Switched from localStorage to IndexedDB: same idea (data lives only in
   // this browser on this device, nothing goes to a server), but IndexedDB's
@@ -916,6 +1055,8 @@
   const STORE_PREFIX = 'ipadnotes:';
   const IDB_NAME = 'ipadnotes-db';
   const IDB_STORE = 'kv';
+  const NOTES_INDEX_KEY = STORE_PREFIX+'notes:index';
+  const NOTE_KEY_PREFIX = STORE_PREFIX+'note:';
 
   let dbPromise = null;
   function openDb(){
@@ -945,6 +1086,19 @@
       tx.onerror = () => reject(tx.error);
     }));
   }
+  async function readNotesFromDb(){
+    const ids = await idbGet(NOTES_INDEX_KEY);
+    if(Array.isArray(ids)){
+      const loaded = await Promise.all(ids.map(id => idbGet(NOTE_KEY_PREFIX + id)));
+      return normalizeNotes(loaded.filter(Boolean));
+    }
+    return normalizeNotes((await idbGet(STORE_PREFIX+'notes')) || []);
+  }
+  async function writeAllNotesToDb(list){
+    const normalized = normalizeNotes(list);
+    await Promise.all(normalized.map(note => idbSet(NOTE_KEY_PREFIX + note.id, note)));
+    await idbSet(NOTES_INDEX_KEY, normalized.map(note => note.id));
+  }
 
   async function loadState(){
     // Ask the browser to mark this site's storage as "persistent" — it
@@ -953,8 +1107,11 @@
     // own storage sandbox gets.
     try{ if(navigator.storage && navigator.storage.persist) await navigator.storage.persist(); }catch(e){}
 
+    let hadPerNoteStore = false;
     try{
-      notes = (await idbGet(STORE_PREFIX+'notes')) || [];
+      const noteIndex = await idbGet(NOTES_INDEX_KEY);
+      hadPerNoteStore = Array.isArray(noteIndex);
+      notes = hadPerNoteStore ? await readNotesFromDb() : normalizeNotes((await idbGet(STORE_PREFIX+'notes')) || []);
       folders = (await idbGet(STORE_PREFIX+'folders')) || [];
       theme = (await idbGet(STORE_PREFIX+'theme')) || 'dark';
     }catch(e){
@@ -969,16 +1126,17 @@
         const oldNotes = localStorage.getItem(STORE_PREFIX+'notes');
         const oldFolders = localStorage.getItem(STORE_PREFIX+'folders');
         const oldTheme = localStorage.getItem(STORE_PREFIX+'theme');
-        if(oldNotes) notes = JSON.parse(oldNotes);
+        if(oldNotes) notes = normalizeNotes(JSON.parse(oldNotes));
         if(oldFolders) folders = JSON.parse(oldFolders);
         if(oldTheme) theme = oldTheme;
         if(oldNotes || oldFolders){
-          await idbSet(STORE_PREFIX+'notes', notes);
           await idbSet(STORE_PREFIX+'folders', folders);
           await idbSet(STORE_PREFIX+'theme', theme);
         }
       }catch(e){}
     }
+    notes = normalizeNotes(notes);
+    if(!hadPerNoteStore && notes.length){ try{ await writeAllNotesToDb(notes); }catch(e){} }
   }
   let toastTimer = null;
   function showToast(text){
@@ -989,13 +1147,24 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 1200);
   }
+  let pendingNoteIds = new Set();
+  let pendingFullNotesSave = false;
   async function persistNotes(){
-    try{ await idbSet(STORE_PREFIX+'notes', notes); showToast('Saved'); }
-    catch(e){ console.error('Save failed — storage may be full', e); alert('Could not save. Your device storage may be full — try exporting a backup and clearing some old notes.'); }
+    const idsToSave = pendingFullNotesSave ? new Set(notes.map(note => note.id)) : new Set(pendingNoteIds);
+    const snapshot = notes.slice();
+    try{
+      await Promise.all(snapshot.filter(note => idsToSave.has(note.id)).map(note => idbSet(NOTE_KEY_PREFIX + note.id, normalizeNote(note))));
+      await idbSet(NOTES_INDEX_KEY, snapshot.map(note => note.id));
+      pendingNoteIds.clear(); pendingFullNotesSave = false;
+      showToast('Saved');
+    }catch(e){ console.error('Save failed — storage may be full', e); alert('Could not save. Your device storage may be full — try exporting a backup and clearing some old notes.'); }
   }
   async function persistFolders(){ try{ await idbSet(STORE_PREFIX+'folders', folders); }catch(e){ console.error(e); } }
   async function persistTheme(){ try{ await idbSet(STORE_PREFIX+'theme', theme); }catch(e){ console.error(e); } }
-  function scheduleSave(){ clearTimeout(saveTimer); saveTimer = setTimeout(persistNotes, 350); }
+  function scheduleSave(noteId){
+    if(noteId) pendingNoteIds.add(noteId); else pendingFullNotesSave = true;
+    clearTimeout(saveTimer); saveTimer = setTimeout(persistNotes, 350);
+  }
 
   // ---------- backup / restore to a real file ----------
   // A plain <a download> link on iOS Safari saves silently to a fixed
@@ -1036,7 +1205,7 @@
   }
 
   function backupToFile(){
-    const payload = { app: 'forgenotes-backup', version: 1, exportedAt: Date.now(), notes, folders };
+    const payload = { app: 'forgenotes-backup', version: 2, exportedAt: Date.now(), notes: normalizeNotes(notes), folders };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const stamp = new Date().toISOString().slice(0,10);
     saveOrShareFile(blob, `notes-backup-${stamp}.json`, 'application/json');
@@ -1051,11 +1220,11 @@
         checkpoint();
         if(mode){
           const existingIds = new Set(notes.map(n => n.id));
-          payload.notes.forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
+          normalizeNotes(payload.notes).forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
           const existingFolderIds = new Set(folders.map(f => f.id));
           (payload.folders||[]).forEach(f => { if(!existingFolderIds.has(f.id)) folders.push(f); });
         } else {
-          notes = payload.notes;
+          notes = normalizeNotes(payload.notes);
           folders = payload.folders || [];
         }
         commitMutation(); persistFolders(); renderAll();
@@ -1185,7 +1354,7 @@
     checkpoint();
     const note = {
       id: uid(), title: file.name ? file.name.replace(/\.[^.]+$/, '') : '', body: '', mode: 'draw',
-      drawing: null, canvasBg: 'grid',
+      strokes: [], vectorVersion: 2, canvasBg: 'grid',
       paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' },
       canvasHeight: DEFAULT_CANVAS_HEIGHT,
       bgPages: pages,
@@ -1334,8 +1503,8 @@
     const folder = folderById(n.folderId);
     const accent = folder ? folder.color : '#3d7fff';
     if((n.mode||'text') === 'draw'){
-      if(n.drawing){
-        return `<div class="card-thumb"><img src="${n.drawing}" alt="" /></div>`;
+      if(noteHasInk(n)){
+        return `<div class="card-thumb"><canvas class="card-drawing-thumb" data-vector-thumb="${n.id}" aria-hidden="true"></canvas></div>`;
       }
       const bgColor = getPaper(n).paperColor;
       return `<div class="card-thumb" style="background:${bgColor};"><div class="draw-empty">${ICONS.pen}</div></div>`;
@@ -1427,6 +1596,28 @@
       checkpoint(); n.trashed = true; n.trashedAt = Date.now(); n.pinned = false;
       commitMutation(); renderAll();
     }));
+    renderVectorThumbnails();
+  }
+
+  function renderVectorThumbnails(){
+    document.querySelectorAll('[data-vector-thumb]').forEach(canvasEl => {
+      const note = notes.find(n => n.id === canvasEl.dataset.vectorThumb);
+      if(!note) return;
+      const w = Math.max(1, canvasEl.clientWidth * 2);
+      const h = Math.max(1, canvasEl.clientHeight * 2);
+      canvasEl.width = w; canvasEl.height = h;
+      const c = canvasEl.getContext('2d');
+      c.fillStyle = getPaper(note).paperColor; c.fillRect(0, 0, w, h);
+      const sourceW = note.canvasWidth || w;
+      const scale = w / sourceW;
+      const paintVectors = () => { c.save(); c.scale(scale, scale); renderVectorStrokes(c, note.strokes || []); c.restore(); };
+      if(note.legacyInk){
+        const img = new Image();
+        img.onload = () => { c.drawImage(img, 0, 0, w, h); paintVectors(); };
+        img.onerror = paintVectors;
+        img.src = note.legacyInk;
+      } else paintVectors();
+    });
   }
 
   function renderEmptyGrid(){
@@ -1791,6 +1982,8 @@
     const scrollEl = document.getElementById('canvasScroll');
     const ratio = window.devicePixelRatio || 1;
     const initialWidth = wrap.clientWidth;
+    if(!note.canvasWidth) note.canvasWidth = initialWidth;
+    let legacyInkImage = null;
     const importedHeight = (note.bgPages || []).reduce((sum, page) => {
       if(!page.naturalW || !page.naturalH) return sum;
       return sum + (page.naturalH / page.naturalW) * initialWidth;
@@ -1808,11 +2001,17 @@
       canvas.style.height = newCssH + 'px';
       const ctx2 = canvas.getContext('2d');
       ctx2.scale(ratio, ratio); ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
-      if(note.drawing){
+      const sourceW = note.canvasWidth || cssW;
+      if(!note.canvasWidth) note.canvasWidth = cssW;
+      const vectorScale = cssW / sourceW;
+      const paintVectors = () => { ctx2.save(); ctx2.scale(vectorScale, vectorScale); renderVectorStrokes(ctx2, note.strokes || []); ctx2.restore(); };
+      if(note.legacyInk){
         const img = new Image();
-        img.onload = () => ctx2.drawImage(img, 0, 0, cssW, preserveOldCssH || newCssH);
-        img.src = note.drawing;
-      }
+        legacyInkImage = img;
+        img.onload = () => renderSavedVectorInk();
+        img.onerror = paintVectors;
+        img.src = note.legacyInk;
+      } else { legacyInkImage = null; paintVectors(); }
       // Keep the predictive overlay canvas pixel-for-pixel aligned with the
       // main canvas so a predicted stroke lines up exactly with the real one.
       if(predCanvas){
@@ -1834,12 +2033,9 @@
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
     }
 
-    // ----- Lasso: lift a region of ink off the page, drag it, drop it -----
-    // The page is a raster canvas, so a selection is literally a cut-out
-    // bitmap: the chosen region is copied to its own canvas, erased from the
-    // page, and drawn live on the overlay until it's dropped again.
-    let lassoPath = [];         // CSS-px points of the selection outline
-    let lassoSel = null;        // { canvas, x, y, w, h, path }
+    // ----- Lasso: select, move, and delete vector ink objects -----
+    let lassoPath = [];
+    let lassoSel = null;        // { strokes, x, y, w, h, path }
     let lassoOffset = { x: 0, y: 0 };
     let lassoDragging = false, lassoDragFrom = null, lassoDrawing = false;
 
@@ -1857,39 +2053,46 @@
       }
       return inside;
     }
+    function translateStroke(stroke, dx, dy){
+      return Object.assign({}, stroke, { id:uid('s_'), points:stroke.points.map(p => ({ x:p.x+dx, y:p.y+dy, r:p.r, cum:p.cum })) });
+    }
     function renderLasso(){
       if(!predCtx) return;
       clearPredictive();
       if(predCanvas) predCanvas.style.opacity = '1';
       predCtx.save();
       if(lassoSel){
-        predCtx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
+        predCtx.save();
+        predCtx.translate(lassoOffset.x, lassoOffset.y);
+        predCtx.scale(wrap.clientWidth / (note.canvasWidth || wrap.clientWidth), wrap.clientWidth / (note.canvasWidth || wrap.clientWidth));
+        renderVectorStrokes(predCtx, lassoSel.strokes);
+        predCtx.restore();
       }
-      const outline = lassoSel ? lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })) : lassoPath;
+      const outline = lassoSel ? lassoSel.path.map(pt => ({ x:pt.x+lassoOffset.x, y:pt.y+lassoOffset.y })) : lassoPath;
       if(outline.length > 1){
         predCtx.setLineDash([6, 5]);
         predCtx.lineWidth = 1.5;
         predCtx.strokeStyle = 'rgba(90,160,255,0.95)';
-        pathFor(outline, predCtx);
-        predCtx.stroke();
+        pathFor(outline, predCtx); predCtx.stroke();
       }
       predCtx.restore();
     }
     function lassoDropSelection(){
       if(!lassoSel) return;
-      ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
-      ctx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
-      ctx.restore();
-      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
+      checkpoint(note.id);
+      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
+      note.strokes = (note.strokes || []).concat(lassoSel.strokes.map(st => translateStroke(st, lassoOffset.x * documentScale, lassoOffset.y * documentScale)));
+      lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
       clearPredictive();
+      renderSavedVectorInk();
       saveDrawing();
     }
     function lassoDeleteSelection(){
       if(!lassoSel) return;
-      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
+      checkpoint(note.id);
+      lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
       clearPredictive();
+      renderSavedVectorInk();
       saveDrawing();
     }
     function lassoLift(){
@@ -1904,23 +2107,16 @@
       const w = Math.min(wrap.clientWidth - x, Math.max(...xs) - x + 4);
       const h = Math.min(cssH - y, Math.max(...ys) - y + 4);
       if(w < 4 || h < 4){ lassoPath = []; clearPredictive(); return; }
-      const cut = document.createElement('canvas');
-      cut.width = Math.ceil(w * ratio); cut.height = Math.ceil(h * ratio);
-      const cctx = cut.getContext('2d');
-      cctx.scale(ratio, ratio);
-      cctx.translate(-x, -y);
-      pathFor(pts, cctx);
-      cctx.clip();
-      cctx.drawImage(canvas, 0, 0, wrap.clientWidth, cssH);
-      // Erase the lifted region from the page itself.
-      ctx.save();
-      pathFor(pts, ctx);
-      ctx.clip();
-      ctx.clearRect(x, y, w, h);
-      ctx.restore();
-      lassoSel = { canvas: cut, x, y, w, h, path: pts.map(pt => ({ x: pt.x, y: pt.y })) };
+      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
+      const selectionPts = pts.map(pt => ({ x:pt.x * documentScale, y:pt.y * documentScale }));
+      const selected = (note.strokes || []).filter(st => st.points.some(p => pointInPath(selectionPts, p.x, p.y)));
+      if(!selected.length){ lassoPath = []; clearPredictive(); return; }
+      checkpoint(note.id);
+      note.strokes = (note.strokes || []).filter(st => !selected.includes(st));
+      lassoSel = { strokes:selected.map(normalizeStroke), x, y, w, h, path:pts.map(pt => ({x:pt.x,y:pt.y})) };
       lassoPath = [];
-      lassoOffset = { x: 0, y: 0 };
+      lassoOffset = { x:0, y:0 };
+      renderSavedVectorInk();
       renderLasso();
       saveDrawing();
     }
@@ -1929,9 +2125,9 @@
     // on top of) lives on its own canvas, entirely separate from the ink
     // above it — via a negative z-index so it sits behind the ink canvas
     // but in front of the page's own dot/line background. That separation
-    // matters: erasing or clearing ink never touches it, and note.drawing
-    // (the ink layer's own saved PNG) stays just the ink, nothing baked
-    // in — the two are only composited together at export time.
+    // matters: erasing or clearing ink never touches it, and vector strokes
+    // stay separate from the imported pages — the two are only composited
+    // together at export time.
     const bgCanvas = document.getElementById('drawCanvasBg');
     const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
 
@@ -2155,8 +2351,8 @@
     // canvas, synchronously — used whenever the canvas needs resizing
     // mid-session (growing taller while drawing, or a width resync), so it
     // can be redrawn from exactly what's live right now. That distinction
-    // matters: reloading from the last *saved* image (note.drawing, like
-    // the initial load above does) would silently drop anything drawn
+    // matters: reloading from the last saved raster would silently drop
+    // anything drawn
     // since that save — most importantly the stroke currently in progress,
     // since both of these resizes can happen mid-stroke by design — and
     // doing it via an async Image/data-URL round trip (as opposed to a
@@ -2485,11 +2681,32 @@
     function showEraserCursor(){ if(eraserCursor && drawState.erasing) eraserCursor.classList.add('show'); }
     function hideEraserCursor(){ if(eraserCursor) eraserCursor.classList.remove('show'); }
 
+    function renderSavedVectorInk(){
+      ctx.save();
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, canvas.width / ratio, canvas.height / ratio);
+      if(legacyInkImage && legacyInkImage.complete && legacyInkImage.naturalWidth){
+        ctx.drawImage(legacyInkImage, 0, 0, wrap.clientWidth, cssH);
+      }
+      const sourceW = note.canvasWidth || wrap.clientWidth;
+      const scale = wrap.clientWidth / sourceW;
+      ctx.save(); ctx.scale(scale, scale); renderVectorStrokes(ctx, note.strokes || []); ctx.restore();
+      ctx.restore();
+    }
+    function appendCurrentStroke(){
+      if(!strokePts.length) return;
+      const sourceW = note.canvasWidth || wrap.clientWidth;
+      const scale = sourceW / wrap.clientWidth;
+      const points = strokePts.map(p => ({ x:p.x*scale, y:p.y*scale, r:p.r*scale, cum:p.cum*scale }));
+      const stored = normalizeStroke({
+        id:uid('s_'), tool:drawState.tool, color:drawState.color, alpha:strokeAlpha,
+        straight:strokeStraight, dash:strokeDash, penSize:drawState.penSize*scale, points
+      });
+      if(stored) note.strokes = (note.strokes || []).concat(stored);
+    }
     function saveDrawing(){
-      checkpoint(note.id);
-      note.drawing = canvas.toDataURL('image/png');
       note.updatedAt = Date.now();
-      commitMutation();
+      commitMutation(note.id);
     }
 
     // Gesture routing: pen/stylus and mouse always draw. A bare finger touch
@@ -2529,6 +2746,41 @@
       if(e.pointerType !== 'touch') return false;
       const big = (e.width || 0) > PALM_CONTACT_PX || (e.height || 0) > PALM_CONTACT_PX;
       return big && (Date.now() - lastPenActivityAt) < PEN_RECENCY_MS;
+    }
+
+    function pointSegmentDistance(px, py, ax, ay, bx, by){
+      const dx = bx-ax, dy = by-ay;
+      const len2 = dx*dx + dy*dy;
+      const t = len2 ? Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / len2)) : 0;
+      return Math.hypot(px-(ax+dx*t), py-(ay+dy*t));
+    }
+    function splitStrokeAtEraser(stroke, x, y, radius){
+      const runs = [], run = [];
+      const pts = stroke.points || [];
+      for(let i = 0; i < pts.length; i++){
+        const p = pts[i];
+        const pointHit = Math.hypot(p.x-x, p.y-y) <= radius + p.r;
+        const prev = pts[i-1];
+        const segmentHit = prev && pointSegmentDistance(x, y, prev.x, prev.y, p.x, p.y) <= radius + Math.max(prev.r, p.r);
+        if(pointHit || segmentHit){
+          if(run.length) runs.push(run.splice(0, run.length));
+        } else run.push(p);
+      }
+      if(run.length) runs.push(run.slice());
+      if(runs.length === 1 && runs[0].length === pts.length) return [stroke];
+      return runs.filter(r => r.length).map(points => normalizeStroke(Object.assign({}, stroke, { id:uid('s_'), points })));
+    }
+    function eraseVectorAt(x, y){
+      const before = note.strokes || [];
+      const next = [];
+      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
+      x *= documentScale; y *= documentScale;
+      const radius = (drawState.eraserSize / 2) * documentScale;
+      before.forEach(stroke => next.push(...splitStrokeAtEraser(stroke, x, y, radius)));
+      if(next.length !== before.length || next.some((st, i) => st !== before[i])){
+        note.strokes = next;
+        renderSavedVectorInk();
+      }
     }
 
     canvas.addEventListener('pointerdown', (e) => {
@@ -2601,6 +2853,7 @@
       }
 
       strokeIsErasing = drawState.erasing;
+      if(strokeIsErasing) checkpoint(note.id);
       strokeAlpha = currentAlpha();
       strokeStraight = !strokeIsErasing && drawState.tool === 'highlighter' && !!tset().straightLine;
       strokeDash = (!strokeIsErasing && drawState.tool === 'highlighter') ? (tset().dash || 'solid') : 'solid';
@@ -2610,10 +2863,7 @@
       ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
 
       if(strokeIsErasing){
-        // Eraser stays simple, immediate, and constant-width — painted
-        // straight onto the real canvas as you go. Predictable removal
-        // matters more here than tapered artistry.
-        stampCircle(ctx, x, y, drawState.eraserSize / 2);
+        eraseVectorAt(x, y);
         return;
       }
 
@@ -2688,9 +2938,6 @@
       if(!events.length) events = [e];
 
       if(strokeIsErasing){
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.fillStyle = '#000';
-        const r = drawState.eraserSize / 2;
         events.forEach(ev => {
           let [x, y] = pos(ev);
           if(jitterAlpha){
@@ -2698,7 +2945,7 @@
             smoothY = smoothY + (y - smoothY) * (1 - jitterAlpha);
             x = smoothX; y = smoothY;
           }
-          stampSegment(ctx, lastX, lastY, r, x, y, r);
+          eraseVectorAt(x, y);
           lastX = x; lastY = y;
           growIfNear(y);
         });
@@ -2783,30 +3030,16 @@
           }
           return;
         }
+        if(strokeIsErasing){
+          strokePts = []; bakedCount = 0;
+          saveDrawing(); growIfNear(lastY);
+          return;
+        }
         if(strokeIsHighlighter){
-          // Flatten the whole overlay stroke onto the page in one pass at
-          // highlighter opacity, so overlaps within the stroke stay even.
-          if(predCanvas && strokePts.length){
-            // ctx is always left with ctx.scale(ratio, ratio) applied (set
-            // in sizeCanvasTo/resizeLiveCanvas so every other draw call can
-            // work in plain CSS-pixel coordinates). canvas.width/height are
-            // DEVICE-pixel dimensions (cssW*ratio), though, so passing them
-            // straight to drawImage as the destination size — while that
-            // ratio scale is still active — scaled the flattened highlighter
-            // image by devicePixelRatio a second time. On any HiDPI screen
-            // (ratio > 1, i.e. virtually every phone/tablet) that stretched
-            // and shifted the highlighter mark away from the actual pen
-            // path the moment you lifted the pen. predCanvas is already
-            // pixel-for-pixel aligned with canvas in device pixels, so draw
-            // it 1:1 with the transform reset rather than going through the
-            // CSS-scaled coordinate system at all.
-            ctx.save();
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = strokeAlpha;
-            ctx.drawImage(predCanvas, 0, 0);
-            ctx.restore();
-          }
+          // The live overlay is only a preview. The durable representation is
+          // the same point/radius vector used to render it.
+          appendCurrentStroke();
+          renderSavedVectorInk();
           strokeIsHighlighter = false;
           setPredictiveOpacity();
           clearPredictive();
@@ -2827,6 +3060,8 @@
             stampSegment(ctx, a.x, a.y, ra, b.x, b.y, rb);
           }
         }
+        appendCurrentStroke();
+        renderSavedVectorInk();
         strokePts = []; bakedCount = 0;
         saveDrawing(); growIfNear(lastY);
       }
@@ -2859,7 +3094,7 @@
   }
 
   function isBlankNote(note){
-    return !note.title.trim() && !note.body.trim() && !note.drawing && (!note.tags || note.tags.length === 0);
+    return !note.title.trim() && !note.body.trim() && !noteHasInk(note) && (!note.tags || note.tags.length === 0);
   }
   function closeEditor(note){
     if(isBlankNote(note)){
@@ -3186,7 +3421,7 @@
         const hasBg = (note.bgPages || []).length > 0;
         if(!confirm(hasBg ? 'Clear your drawing? The imported page(s) underneath will stay.' : 'Clear this drawing?')) return;
         checkpoint();
-        note.drawing = null;
+        note.strokes = []; note.legacyInk = null;
         if(hasBg){
           const wrapEl = document.getElementById('canvasWrapEl');
           const cssW = wrapEl ? wrapEl.clientWidth : 0;
@@ -3217,11 +3452,19 @@
       });
     } else if(kind === 'pdf'){
       const printArea = document.getElementById('printArea');
-      const bodyHtml = note.mode === 'draw' && note.drawing
-        ? `<img src="${note.drawing}" style="max-width:100%;" />`
-        : `<div style="white-space:pre-wrap; line-height:1.6;">${escapeHtml(note.body || '')}</div>`;
-      printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1>${bodyHtml}`;
-      window.print();
+      if(note.mode === 'draw'){
+        compositeDrawingPng(note).then(blob => {
+          if(!blob) return;
+          const url = URL.createObjectURL(blob);
+          printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1><img src="${url}" style="max-width:100%;" />`;
+          window.print();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        });
+      } else {
+        const bodyHtml = `<div style="white-space:pre-wrap; line-height:1.6;">${escapeHtml(note.body || '')}</div>`;
+        printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1>${bodyHtml}`;
+        window.print();
+      }
     }
   }
 
@@ -3235,9 +3478,11 @@
       const w = 1000; // export at a fixed reference width; height follows content
       const bgPages = note.bgPages || [];
       const bgH = bgPages.reduce((sum, p) => sum + (p.naturalH / p.naturalW) * w, 0);
-      const h = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, bgH, 1);
+      const sourceW = note.canvasWidth || w;
+      const vectorScale = w / sourceW;
+      const h = Math.max((note.canvasHeight || DEFAULT_CANVAS_HEIGHT) * vectorScale, bgH, 1);
       const out = document.createElement('canvas');
-      out.width = w; out.height = h;
+      out.width = w; out.height = Math.ceil(h);
       const octx = out.getContext('2d');
       const bgStyle = getPaper(note).paperColor;
       octx.fillStyle = bgStyle;
@@ -3260,10 +3505,14 @@
           if(img) octx.drawImage(img, 0, y, w, pageH);
           y += pageH;
         }
-        if(note.drawing){
-          const inkImg = await loadImg(note.drawing);
+        if(note.legacyInk){
+          const inkImg = await loadImg(note.legacyInk);
           if(inkImg) octx.drawImage(inkImg, 0, 0, w, h);
         }
+        octx.save();
+        octx.scale(vectorScale, vectorScale);
+        renderVectorStrokes(octx, note.strokes || []);
+        octx.restore();
         out.toBlob((blob) => resolve(blob), 'image/png');
       })();
     });
@@ -3273,7 +3522,7 @@
   function createNote(folderId){
     checkpoint();
     const note = {
-      id: uid(), title: '', body: '', mode: 'text', drawing: null, canvasBg: 'grid', paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' }, canvasHeight: DEFAULT_CANVAS_HEIGHT,
+      id: uid(), title: '', body: '', mode: 'text', strokes: [], vectorVersion: 2, canvasBg: 'grid', paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' }, canvasHeight: DEFAULT_CANVAS_HEIGHT,
       icon: ICON_CYCLE[0], tags: [], folderId: folderId || null,
       pinned: false, trashed: false, trashedAt: null,
       createdAt: Date.now(), updatedAt: Date.now(),
