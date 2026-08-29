@@ -2959,7 +2959,10 @@
       gestureMode = 'draw';
       drawing = true;
       primaryPointerId = e.pointerId; primaryPointerType = e.pointerType;
-      try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
+      // Pointer events are handled by the transparent full-document input
+      // layer. Capture there as well; capturing on the visible canvas would
+      // retarget real stylus move/up events away from these listeners.
+      try { inputLayer.setPointerCapture(e.pointerId); } catch(err) {}
       const [x, y] = pos(e);
       lastX = x; lastY = y; smoothX = x; smoothY = y;
       moveEraserCursor(x, y);
