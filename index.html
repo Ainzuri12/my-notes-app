@@ -1152,26 +1152,13 @@
       const buf = await file.arrayBuffer();
       const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
       const pages = [];
-      // Rasterise to a fixed target width rather than a fixed 2x scale, and
-      // store JPEG instead of PNG. A 2x PNG per page is several megabytes,
-      // which is what made a long PDF import lock the app up (render, encode,
-      // then serialise all of it into storage on every later mutation).
-      const TARGET_W = 1400;
       for(let i = 1; i <= pdf.numPages; i++){
         const page = await pdf.getPage(i);
-        const base = page.getViewport({ scale: 1 });
-        const scale = Math.min(2, Math.max(1, TARGET_W / base.width));
-        const viewport = page.getViewport({ scale });
+        const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
         const off = document.createElement('canvas');
         off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
-        const octx = off.getContext('2d');
-        octx.fillStyle = '#ffffff';
-        octx.fillRect(0, 0, off.width, off.height); // JPEG has no alpha
-        await page.render({ canvasContext: octx, viewport }).promise;
-        pages.push({ src: off.toDataURL('image/jpeg', 0.82), naturalW: off.width, naturalH: off.height });
-        // Hand the frame back to the browser between pages so the UI (and the
-        // import progress) stays responsive on a big document.
-        await new Promise(r => requestAnimationFrame(() => r()));
+        await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
+        pages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
       }
       if(!pages.length) throw new Error('That PDF has no pages in it.');
       return pages;
@@ -1947,38 +1934,172 @@
     // in — the two are only composited together at export time.
     const bgCanvas = document.getElementById('drawCanvasBg');
     const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
-    const bgImageCache = new Map(); // src -> decoded Image, so repeated resizes don't re-decode every page every time
-    function loadBgImage(src){
-      if(bgImageCache.has(src)) return Promise.resolve(bgImageCache.get(src));
-      return new Promise((resolve) => {
+
+    // The background layer is VIRTUALISED. A 40-page PDF at ~1400px wide is
+    // far too much bitmap to hold in one full-document canvas (iPadOS simply
+    // drops the canvas past a few thousand pixels tall, and decoding every
+    // page at once is what made importing stall the UI). Instead the bg
+    // canvas is only as tall as the viewport (plus a screen of overscan),
+    // absolutely positioned and moved with the scroll position, and only the
+    // pages that actually intersect that window are decoded and drawn. Page
+    // count is therefore effectively unlimited.
+    const BG_CACHE_MAX = 12;                // decoded pages kept in memory (LRU)
+    const bgImageCache = new Map();         // key -> decoded bitmap, most-recent last
+    const bgPending = new Map();            // key -> in-flight decode promise
+    function bgCacheGet(key){
+      if(!bgImageCache.has(key)) return null;
+      const img = bgImageCache.get(key);
+      bgImageCache.delete(key); bgImageCache.set(key, img); // refresh recency
+      return img;
+    }
+    function bgCachePut(key, img){
+      bgImageCache.set(key, img);
+      while(bgImageCache.size > BG_CACHE_MAX){
+        const oldestKey = bgImageCache.keys().next().value;
+        const oldest = bgImageCache.get(oldestKey);
+        bgImageCache.delete(oldestKey); // drop the off-screen bitmap; it re-decodes if scrolled back to
+        if(oldest && typeof oldest.close === 'function') oldest.close();
+      }
+    }
+    // Pages are decoded AND downscaled once, off the main thread, to exactly
+    // the pixel size they're painted at. Scaling a 3000px-wide page down to
+    // the canvas on every single repaint was the expensive part of scrolling;
+    // a pre-sized bitmap makes each repaint a straight 1:1 blit.
+    function loadBgImage(src, pxW, pxH){
+      const key = src + '@' + pxW + 'x' + pxH;
+      const hit = bgCacheGet(key);
+      if(hit) return Promise.resolve(hit);
+      if(bgPending.has(key)) return bgPending.get(key);
+      const p = new Promise((resolve) => {
         const img = new Image();
-        img.onload = () => { bgImageCache.set(src, img); resolve(img); };
-        img.onerror = () => resolve(null);
+        img.decoding = 'async';
+        img.onload = async () => {
+          let out = img;
+          try{
+            if(typeof createImageBitmap === 'function'){
+              out = await createImageBitmap(img, { resizeWidth: pxW, resizeHeight: pxH, resizeQuality: 'high' });
+            }
+          }catch(err){ out = img; }
+          bgCachePut(key, out); bgPending.delete(key); resolve(out);
+        };
+        img.onerror = () => { bgPending.delete(key); resolve(null); };
         img.src = src;
       });
+      bgPending.set(key, p);
+      return p;
+    }
+    function bgPageLayout(cssW){
+      const out = [];
+      let y = 0;
+      for(const p of (note.bgPages || [])){
+        if(!p.naturalW || !p.naturalH) continue;
+        const h = (p.naturalH / p.naturalW) * cssW;
+        out.push({ page: p, y, h });
+        y += h;
+      }
+      return out;
     }
     function bgContentHeight(cssW){
       return (note.bgPages || []).reduce((sum, p) => sum + (p.naturalH / p.naturalW) * cssW, 0);
     }
-    async function renderBgLayer(cssWNow, cssHNow){
-      if(!bgCanvas || !bgCtx) return;
-      bgCanvas.width = cssWNow * ratio; bgCanvas.height = cssHNow * ratio;
-      bgCanvas.style.height = cssHNow + 'px';
-      bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      bgCtx.clearRect(0, 0, cssWNow, cssHNow);
-      const pages = note.bgPages || [];
-      // Decode every imported page immediately and in parallel. Loading one
-      // page at a time made long PDFs appear only as the user scrolled down.
-      const images = await Promise.all(pages.map(page => loadBgImage(page.src)));
-      let y = 0;
-      for(let index = 0; index < pages.length; index++){
-        const page = pages[index];
-        const h = (page.naturalH / page.naturalW) * cssWNow;
-        const img = images[index];
-        if(img) bgCtx.drawImage(img, 0, y, cssWNow, h);
-        y += h;
-      }
+
+    let bgW = wrap.clientWidth;
+    let bgDocH = cssH;
+    let bgFrame = 0;
+    let bgPaintToken = 0;
+    // The window of document space currently painted onto the bg canvas.
+    let bgPainted = { w: 0, top: 0, bottom: 0, pages: -1 };
+    function scheduleBgDraw(force){
+      if(force) bgPainted = { w: 0, top: 0, bottom: 0, pages: -1 };
+      if(bgFrame) return;
+      bgFrame = requestAnimationFrame(() => { bgFrame = 0; drawBgViewport(); });
     }
+    async function drawBgViewport(){
+      if(!bgCanvas || !bgCtx) return;
+      const cssW = bgW;
+      const pages = bgPageLayout(cssW);
+      if(!pages.length){
+        if(bgCanvas.width || bgCanvas.height){ bgCanvas.width = 0; bgCanvas.height = 0; }
+        bgPainted = { w: cssW, top: 0, bottom: 0, pages: 0 };
+        return;
+      }
+      const viewH = Math.max(1, scrollEl ? scrollEl.clientHeight : bgDocH);
+      const scrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+      // Nothing to do at all while the viewport stays comfortably inside the
+      // window that's already painted. This is what makes scrolling free:
+      // the canvas is inside the scrolling content, so it moves with the page
+      // on its own — no per-frame clear, no per-frame repaint.
+      const slack = viewH * 0.4;
+      if(bgPainted.pages === pages.length && bgPainted.w === cssW &&
+         (bgPainted.top <= 0 || scrollTop - slack >= bgPainted.top) &&
+         (bgPainted.bottom >= bgDocH || scrollTop + viewH + slack <= bgPainted.bottom)){
+        return;
+      }
+
+      const overscan = viewH;                       // a screen of slack above and below
+      const top = Math.max(0, Math.round(scrollTop - overscan));
+      const bottom = Math.min(bgDocH, Math.round(scrollTop + viewH + overscan));
+      const height = Math.max(1, bottom - top);
+
+      const visible = pages.filter(e => !(e.y + e.h <= top || e.y >= bottom));
+
+      // Decode everything the new window needs BEFORE touching the canvas.
+      // Clearing first and filling in as decodes landed is exactly what made
+      // the page flash back to blank paper mid-scroll; the old pixels now
+      // simply stay put until the replacement is ready to paint in one shot.
+      const token = ++bgPaintToken;
+      const bitmaps = await Promise.all(visible.map((entry) => {
+        const pxW = Math.max(1, Math.round(cssW * ratio));
+        const pxH = Math.max(1, Math.round(entry.h * ratio));
+        const cached = bgCacheGet(entry.page.src + '@' + pxW + 'x' + pxH);
+        return cached || loadBgImage(entry.page.src, pxW, pxH);
+      }));
+      if(token !== bgPaintToken) return;            // a newer window superseded this one
+
+      if(bgCanvas.width !== Math.round(cssW * ratio) || bgCanvas.height !== Math.round(height * ratio)){
+        bgCanvas.width = Math.round(cssW * ratio);
+        bgCanvas.height = Math.round(height * ratio);
+        bgCanvas.style.width = cssW + 'px';
+        bgCanvas.style.height = height + 'px';
+      } else {
+        bgCtx.setTransform(1, 0, 0, 1, 0, 0);
+        bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+      }
+      bgCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      bgCtx.translate(0, -top);
+      visible.forEach((entry, i) => {
+        const img = bitmaps[i];
+        if(img) bgCtx.drawImage(img, 0, entry.y, cssW, entry.h);
+      });
+      bgCanvas.style.transform = 'translateY(' + top + 'px)';
+      bgPainted = { w: cssW, top, bottom, pages: pages.length };
+
+      // Warm the pages just outside the painted window while the browser is
+      // idle, so the next repaint (when you scroll past the slack) is a pure
+      // blit with nothing to decode — no hitch, no blank moment.
+      const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 200));
+      idle(() => {
+        if(token !== bgPaintToken) return;
+        const ahead = pages.filter(e => (e.y >= bottom && e.y < bottom + viewH * 2) ||
+                                        (e.y + e.h <= top && e.y + e.h > top - viewH * 2));
+        ahead.slice(0, 4).forEach((entry) => {
+          loadBgImage(entry.page.src, Math.max(1, Math.round(cssW * ratio)), Math.max(1, Math.round(entry.h * ratio)));
+        });
+      });
+    }
+    // Kept for the existing call sites: they tell us the document's current
+    // size, the virtualiser works out what to actually paint.
+    function renderBgLayer(cssWNow, cssHNow){
+      // Growing the page taller (which happens constantly while writing) does
+      // not change a single painted pixel of the background, so only force a
+      // full repaint when the width or the set of pages actually changed.
+      const structural = cssWNow !== bgW || (note.bgPages || []).length !== bgPainted.pages;
+      bgW = cssWNow;
+      bgDocH = Math.max(cssHNow, bgContentHeight(cssWNow));
+      scheduleBgDraw(structural);
+    }
+    if(scrollEl) scrollEl.addEventListener('scroll', () => scheduleBgDraw(), { passive: true });
     renderBgLayer(wrap.clientWidth, cssH);
 
     // Importing a PDF/image (a past paper, a worksheet, etc.) turns each
