@@ -271,15 +271,16 @@
      behind the wrapper's opaque paper colour (the wrapper isn't a stacking
      context, so -1 escaped up to an ancestor) — imports silently never showed.
      Explicit 0/1/2 with the ink canvas positioned keeps the order honest. */
-  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:relative; z-index:1;
+  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:absolute; top:0; left:0; z-index:1;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:2; }
+  #drawInputLayer{ position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none; z-index:3; background:transparent; }
   #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:0; }
   .canvas-shell, .canvas-scroll, .canvas-wrap{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .page-seam{ position:absolute; left:0; right:0; height:1px; background: rgba(128,128,128,0.22); pointer-events:none; }
   .page-seam::after{ content:''; position:absolute; top:1px; left:0; right:0; height:10px; background: linear-gradient(to bottom, rgba(0,0,0,0.12), transparent); }
 
-  .eraser-cursor{ position:absolute; top:0; left:0; width:18px; height:18px; margin-left:-9px; margin-top:-9px;
+  .eraser-cursor{ position:absolute; top:0; left:0; width:18px; height:18px; margin-left:-9px; margin-top:-9px; z-index:4;
     border-radius:50%; border:1.5px solid rgba(255,255,255,0.85); background: rgba(255,255,255,0.12);
     box-shadow: 0 0 0 1px rgba(0,0,0,0.35); pointer-events:none; display:none; z-index:4; }
   .eraser-cursor.show{ display:block; }
@@ -941,6 +942,7 @@
     if(note.drawing && !note.legacyInk) note.legacyInk = note.drawing;
     delete note.drawing;
     note.strokes = Array.isArray(note.strokes) ? note.strokes.map(normalizeStroke).filter(Boolean) : [];
+    note.bgPages = Array.isArray(note.bgPages) ? note.bgPages.map(page => page && typeof page === 'object' ? Object.assign({}, page, { id: page.id || uid('pg_') }) : null).filter(Boolean) : [];
     note.vectorVersion = 2;
     return note;
   }
@@ -1057,6 +1059,7 @@
   const IDB_STORE = 'kv';
   const NOTES_INDEX_KEY = STORE_PREFIX+'notes:index';
   const NOTE_KEY_PREFIX = STORE_PREFIX+'note:';
+  const BG_PAGE_KEY_PREFIX = STORE_PREFIX+'bgpage:';
 
   let dbPromise = null;
   function openDb(){
@@ -1086,6 +1089,30 @@
       tx.onerror = () => reject(tx.error);
     }));
   }
+  function noteForStorage(note){
+    const stored = Object.assign({}, note);
+    stored.bgPages = (note.bgPages || []).map(page => {
+      const meta = Object.assign({}, page);
+      delete meta.src;
+      return meta;
+    });
+    return stored;
+  }
+  function storeBackgroundPages(pages){
+    const unique = new Map((pages || []).filter(page => page && page.id && page.src).map(page => [page.id, page]));
+    return Promise.all(Array.from(unique.values()).map(page => idbSet(BG_PAGE_KEY_PREFIX + page.id, page)));
+  }
+  async function hydrateBackgroundPages(note){
+    const pages = note.bgPages || [];
+    const loaded = await Promise.all(pages.map(async page => {
+      if(page.src || !page.id) return page;
+      const stored = await idbGet(BG_PAGE_KEY_PREFIX + page.id);
+      return stored ? Object.assign({}, page, stored) : page;
+    }));
+    const changed = loaded.some((page, i) => page !== pages[i] && !!page.src);
+    if(changed) note.bgPages = loaded;
+    return changed;
+  }
   async function readNotesFromDb(){
     const ids = await idbGet(NOTES_INDEX_KEY);
     if(Array.isArray(ids)){
@@ -1096,7 +1123,7 @@
   }
   async function writeAllNotesToDb(list){
     const normalized = normalizeNotes(list);
-    await Promise.all(normalized.map(note => idbSet(NOTE_KEY_PREFIX + note.id, note)));
+    await Promise.all(normalized.map(note => idbSet(NOTE_KEY_PREFIX + note.id, noteForStorage(note))));
     await idbSet(NOTES_INDEX_KEY, normalized.map(note => note.id));
   }
 
@@ -1136,7 +1163,9 @@
       }catch(e){}
     }
     notes = normalizeNotes(notes);
-    if(!hadPerNoteStore && notes.length){ try{ await writeAllNotesToDb(notes); }catch(e){} }
+    const inlinePages = notes.flatMap(note => (note.bgPages || []).filter(page => page && page.src));
+    if(inlinePages.length){ try{ await storeBackgroundPages(inlinePages); }catch(e){} }
+    if((!hadPerNoteStore || inlinePages.length) && notes.length){ try{ await writeAllNotesToDb(notes); }catch(e){} }
   }
   let toastTimer = null;
   function showToast(text){
@@ -1153,7 +1182,8 @@
     const idsToSave = pendingFullNotesSave ? new Set(notes.map(note => note.id)) : new Set(pendingNoteIds);
     const snapshot = notes.slice();
     try{
-      await Promise.all(snapshot.filter(note => idsToSave.has(note.id)).map(note => idbSet(NOTE_KEY_PREFIX + note.id, normalizeNote(note))));
+      const notesToSave = snapshot.filter(note => idsToSave.has(note.id)).map(normalizeNote);
+      await Promise.all(notesToSave.map(note => idbSet(NOTE_KEY_PREFIX + note.id, noteForStorage(note))));
       await idbSet(NOTES_INDEX_KEY, snapshot.map(note => note.id));
       pendingNoteIds.clear(); pendingFullNotesSave = false;
       showToast('Saved');
@@ -1204,7 +1234,8 @@
     URL.revokeObjectURL(url);
   }
 
-  function backupToFile(){
+  async function backupToFile(){
+    await Promise.all(notes.map(note => hydrateBackgroundPages(note).catch(() => false)));
     const payload = { app: 'forgenotes-backup', version: 2, exportedAt: Date.now(), notes: normalizeNotes(notes), folders };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const stamp = new Date().toISOString().slice(0,10);
@@ -1212,19 +1243,21 @@
   }
   function restoreFromFile(file){
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try{
         const payload = JSON.parse(reader.result);
         if(!payload || !Array.isArray(payload.notes)) throw new Error('bad file');
         const mode = confirm(`This backup has ${payload.notes.length} note(s) and ${payload.folders ? payload.folders.length : 0} folder(s).\n\nOK = Merge into your current notes\nCancel = Replace everything with this backup`);
+        const incoming = normalizeNotes(payload.notes);
+        await storeBackgroundPages(incoming.flatMap(note => note.bgPages || []));
         checkpoint();
         if(mode){
           const existingIds = new Set(notes.map(n => n.id));
-          normalizeNotes(payload.notes).forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
+          incoming.forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
           const existingFolderIds = new Set(folders.map(f => f.id));
           (payload.folders||[]).forEach(f => { if(!existingFolderIds.has(f.id)) folders.push(f); });
         } else {
-          notes = normalizeNotes(payload.notes);
+          notes = incoming;
           folders = payload.folders || [];
         }
         commitMutation(); persistFolders(); renderAll();
@@ -1266,18 +1299,25 @@
     if(type === 'application/json' || ext === 'json') return 'json';
     return 'other';
   }
-  // Decodes an image file into a canvas-backed PNG page. Tries createImageBitmap
-  // first (it can decode HEIC on Safari where <img> can't), then falls back to
-  // an <img> decode. Rejects if neither works, so the caller can say why.
+  function yieldToMain(){
+    return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+  }
+  // Decodes an image into a bounded canvas-backed page. Keeping imported
+  // pages near their display resolution avoids enormous PNG encodes and keeps
+  // the browser responsive when a camera image is much larger than the note.
   async function imageFileToPage(file){
+    const MAX_IMPORT_PX = 1800;
     try{
       if(window.createImageBitmap){
         const bitmap = await createImageBitmap(file);
+        const scale = Math.min(1, MAX_IMPORT_PX / Math.max(bitmap.width, bitmap.height));
+        const w = Math.max(1, Math.round(bitmap.width * scale));
+        const h = Math.max(1, Math.round(bitmap.height * scale));
         const off = document.createElement('canvas');
-        off.width = bitmap.width; off.height = bitmap.height;
-        off.getContext('2d').drawImage(bitmap, 0, 0);
+        off.width = w; off.height = h;
+        off.getContext('2d').drawImage(bitmap, 0, 0, w, h);
         if(bitmap.close) bitmap.close();
-        return { src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height };
+        return { src: off.toDataURL('image/png'), naturalW: w, naturalH: h };
       }
     }catch(err){ /* fall through to the <img> path below */ }
     const src = await fileToDataUrl(file);
@@ -1287,11 +1327,14 @@
       el.onerror = () => reject(new Error('decode failed'));
       el.src = src;
     });
-    const w = img.naturalWidth || 0, h = img.naturalHeight || 0;
-    if(!w || !h) throw new Error('decode failed');
+    const rawW = img.naturalWidth || 0, rawH = img.naturalHeight || 0;
+    if(!rawW || !rawH) throw new Error('decode failed');
+    const scale = Math.min(1, MAX_IMPORT_PX / Math.max(rawW, rawH));
+    const w = Math.max(1, Math.round(rawW * scale));
+    const h = Math.max(1, Math.round(rawH * scale));
     const off = document.createElement('canvas');
     off.width = w; off.height = h;
-    off.getContext('2d').drawImage(img, 0, 0);
+    off.getContext('2d').drawImage(img, 0, 0, w, h);
     return { src: off.toDataURL('image/png'), naturalW: w, naturalH: h };
   }
   let pdfJsLoadPromise = null;
@@ -1322,12 +1365,18 @@
       const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
       const pages = [];
       for(let i = 1; i <= pdf.numPages; i++){
+        await yieldToMain();
         const page = await pdf.getPage(i);
-        const viewport = page.getViewport({ scale: 2 }); // 2x for crisp text/lines when drawn on top
+        const baseViewport = page.getViewport({ scale: 1 });
+        const targetWidth = Math.min(1800, Math.max(1200, Math.round((window.innerWidth || 900) * (window.devicePixelRatio || 1))));
+        const renderScale = Math.min(2, targetWidth / Math.max(1, baseViewport.width));
+        const viewport = page.getViewport({ scale: renderScale });
         const off = document.createElement('canvas');
         off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
         await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
-        pages.push({ src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height });
+        pages.push({ src: off.toDataURL('image/jpeg', 0.88), naturalW: off.width, naturalH: off.height });
+        if(page.cleanup) page.cleanup();
+        await yieldToMain();
       }
       if(!pages.length) throw new Error('That PDF has no pages in it.');
       return pages;
@@ -1351,6 +1400,8 @@
       alert(err.message || 'Could not import that file.');
       return;
     }
+    pages = pages.map(page => Object.assign({}, page, { id: page.id || uid('pg_') }));
+    await storeBackgroundPages(pages);
     checkpoint();
     const note = {
       id: uid(), title: file.name ? file.name.replace(/\.[^.]+$/, '') : '', body: '', mode: 'draw',
@@ -1394,13 +1445,25 @@
   // next stroke. Passing noteId lets the hot path (drawing) skip that cost;
   // omitting it keeps the safe, general behavior for rarer, non-hot-path
   // mutations (trashing/pinning/moving a note from a list, etc.).
-  function snapshotNotesExcept(noteId){
-    return notes.map(n => (n.id === noteId ? clone(n) : n));
+  function snapshotNote(note){
+    const copy = Object.assign({}, note);
+    copy.strokes = clone(note.strokes || []);
+    copy.tags = Array.isArray(note.tags) ? note.tags.slice() : [];
+    copy.bgPages = (note.bgPages || []).map(page => {
+      const meta = Object.assign({}, page);
+      delete meta.src;
+      return meta;
+    });
+    return copy;
   }
-  function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
+  function snapshotNotesExcept(noteId){
+    return notes.map(n => (n.id === noteId ? snapshotNote(n) : n));
+  }
+  function snapshotAllNotes(){ return notes.map(snapshotNote); }
+  function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : snapshotAllNotes()); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
   function commitMutation(){ checkpointed=false; scheduleSave(); }
-  function doUndo(){ if(!undoStack.length) return; redoStack.push(clone(notes)); notes=undoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
-  function doRedo(){ if(!redoStack.length) return; undoStack.push(clone(notes)); notes=redoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
+  function doUndo(){ if(!undoStack.length) return; redoStack.push(snapshotAllNotes()); notes=undoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
+  function doRedo(){ if(!redoStack.length) return; undoStack.push(snapshotAllNotes()); notes=redoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
 
   // ---------- markdown ----------
   function renderMarkdown(src){
@@ -1848,6 +1911,7 @@
             <canvas id="drawCanvasBg"></canvas>
             <canvas id="drawCanvas"></canvas>
             <canvas id="drawCanvasPredictive"></canvas>
+            <div id="drawInputLayer" aria-hidden="true"></div>
             <div class="eraser-cursor" id="eraserCursor"></div>
           </div>
         </div>
@@ -1977,6 +2041,7 @@
   function setupCanvas(note){
     const canvas = document.getElementById('drawCanvas');
     if(!canvas) return;
+    const inputLayer = document.getElementById('drawInputLayer') || canvas;
     const predCanvas = document.getElementById('drawCanvasPredictive');
     const wrap = document.getElementById('canvasWrapEl');
     const scrollEl = document.getElementById('canvasScroll');
@@ -1993,30 +2058,46 @@
     // resize happened, which made them seem to load only after scrolling.
     let cssH = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, importedHeight);
     note.canvasHeight = cssH;
-
-    function sizeCanvasTo(newCssH, preserveOldCssH){
+    const INK_OVERSCAN = 320;
+    let inkWindowTop = 0;
+    let inkWindowH = Math.min(cssH, Math.max(800, (scrollEl.clientHeight || 700) + INK_OVERSCAN * 2));
+    function calculateInkWindow(docH){
+      const viewportH = Math.max(1, scrollEl.clientHeight || 700);
+      const height = Math.min(docH, Math.max(800, viewportH + INK_OVERSCAN * 2));
+      const maxTop = Math.max(0, docH - height);
+      const top = Math.min(maxTop, Math.max(0, (scrollEl.scrollTop || 0) - INK_OVERSCAN));
+      return { top, height };
+    }
+    function sizeCanvasTo(newCssH, preserveOldCssH, paintStored=true){
       const cssW = wrap.clientWidth;
+      const window = calculateInkWindow(newCssH);
+      inkWindowTop = window.top; inkWindowH = window.height;
       wrap.style.height = newCssH + 'px';
-      canvas.width = cssW * ratio; canvas.height = newCssH * ratio;
-      canvas.style.height = newCssH + 'px';
+      canvas.width = Math.max(1, Math.round(cssW * ratio)); canvas.height = Math.max(1, Math.round(inkWindowH * ratio));
+      canvas.style.height = inkWindowH + 'px'; canvas.style.top = inkWindowTop + 'px';
       const ctx2 = canvas.getContext('2d');
       ctx2.scale(ratio, ratio); ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
       const sourceW = note.canvasWidth || cssW;
       if(!note.canvasWidth) note.canvasWidth = cssW;
       const vectorScale = cssW / sourceW;
-      const paintVectors = () => { ctx2.save(); ctx2.scale(vectorScale, vectorScale); renderVectorStrokes(ctx2, note.strokes || []); ctx2.restore(); };
-      if(note.legacyInk){
-        const img = new Image();
-        legacyInkImage = img;
-        img.onload = () => renderSavedVectorInk();
-        img.onerror = paintVectors;
-        img.src = note.legacyInk;
-      } else { legacyInkImage = null; paintVectors(); }
+      const paintVectors = () => {
+        ctx2.save(); ctx2.translate(0, -inkWindowTop); ctx2.scale(vectorScale, vectorScale);
+        renderVectorStrokes(ctx2, note.strokes || []); ctx2.restore();
+      };
+      if(paintStored){
+        if(note.legacyInk){
+          const img = new Image();
+          legacyInkImage = img;
+          img.onload = () => renderSavedVectorInk();
+          img.onerror = paintVectors;
+          img.src = note.legacyInk;
+        } else { legacyInkImage = null; paintVectors(); }
+      }
       // Keep the predictive overlay canvas pixel-for-pixel aligned with the
-      // main canvas so a predicted stroke lines up exactly with the real one.
+      // bounded main canvas; it is moved with the same document-space window.
       if(predCanvas){
-        predCanvas.width = cssW * ratio; predCanvas.height = newCssH * ratio;
-        predCanvas.style.height = newCssH + 'px';
+        predCanvas.width = Math.max(1, Math.round(cssW * ratio)); predCanvas.height = Math.max(1, Math.round(inkWindowH * ratio));
+        predCanvas.style.height = inkWindowH + 'px'; predCanvas.style.top = inkWindowTop + 'px';
         const pctx = predCanvas.getContext('2d');
         pctx.scale(ratio, ratio); pctx.lineCap = 'round'; pctx.lineJoin = 'round';
       }
@@ -2035,7 +2116,7 @@
 
     // ----- Lasso: select, move, and delete vector ink objects -----
     let lassoPath = [];
-    let lassoSel = null;        // { strokes, x, y, w, h, path }
+    let lassoSel = null;        // { strokes, x, y, w, h, path, detached }
     let lassoOffset = { x: 0, y: 0 };
     let lassoDragging = false, lassoDragFrom = null, lassoDrawing = false;
 
@@ -2061,7 +2142,7 @@
       clearPredictive();
       if(predCanvas) predCanvas.style.opacity = '1';
       predCtx.save();
-      if(lassoSel){
+      if(lassoSel && lassoSel.detached){
         predCtx.save();
         predCtx.translate(lassoOffset.x, lassoOffset.y);
         predCtx.scale(wrap.clientWidth / (note.canvasWidth || wrap.clientWidth), wrap.clientWidth / (note.canvasWidth || wrap.clientWidth));
@@ -2079,6 +2160,11 @@
     }
     function lassoDropSelection(){
       if(!lassoSel) return;
+      if(!lassoSel.detached){
+        lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
+        clearPredictive();
+        return;
+      }
       checkpoint(note.id);
       const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
       note.strokes = (note.strokes || []).concat(lassoSel.strokes.map(st => translateStroke(st, lassoOffset.x * documentScale, lassoOffset.y * documentScale)));
@@ -2090,6 +2176,10 @@
     function lassoDeleteSelection(){
       if(!lassoSel) return;
       checkpoint(note.id);
+      if(!lassoSel.detached){
+        const selectedIds = new Set(lassoSel.strokes.map(st => st.id));
+        note.strokes = (note.strokes || []).filter(st => !selectedIds.has(st.id));
+      }
       lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
       clearPredictive();
       renderSavedVectorInk();
@@ -2112,8 +2202,7 @@
       const selected = (note.strokes || []).filter(st => st.points.some(p => pointInPath(selectionPts, p.x, p.y)));
       if(!selected.length){ lassoPath = []; clearPredictive(); return; }
       checkpoint(note.id);
-      note.strokes = (note.strokes || []).filter(st => !selected.includes(st));
-      lassoSel = { strokes:selected.map(normalizeStroke), x, y, w, h, path:pts.map(pt => ({x:pt.x,y:pt.y})) };
+      lassoSel = { strokes:selected.map(normalizeStroke), x, y, w, h, path:pts.map(pt => ({x:pt.x,y:pt.y})), detached:false };
       lassoPath = [];
       lassoOffset = { x:0, y:0 };
       renderSavedVectorInk();
@@ -2130,6 +2219,13 @@
     // together at export time.
     const bgCanvas = document.getElementById('drawCanvasBg');
     const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
+    // Page metadata is cheap enough to load with the note; the actual raster
+    // payloads live in separate records and are hydrated only for this editor.
+    hydrateBackgroundPages(note).then((changed) => {
+      if(!changed) return;
+      bgPainted = { w:0, top:0, bottom:0, pages:-1 };
+      renderBgLayer(wrap.clientWidth, cssH);
+    }).catch(err => console.warn('Background hydration failed', err));
 
     // The background layer is VIRTUALISED. A 40-page PDF at ~1400px wide is
     // far too much bitmap to hold in one full-document canvas (iPadOS simply
@@ -2238,7 +2334,7 @@
       const bottom = Math.min(bgDocH, Math.round(scrollTop + viewH + overscan));
       const height = Math.max(1, bottom - top);
 
-      const visible = pages.filter(e => !(e.y + e.h <= top || e.y >= bottom));
+      const visible = pages.filter(e => e.page.src && !(e.y + e.h <= top || e.y >= bottom));
 
       // Decode everything the new window needs BEFORE touching the canvas.
       // Clearing first and filling in as decodes landed is exactly what made
@@ -2314,6 +2410,8 @@
         return;
       }
 
+      newPages = newPages.map(page => Object.assign({}, page, { id: page.id || uid('pg_') }));
+      await storeBackgroundPages(newPages);
       checkpoint();
       note.bgPages = (note.bgPages || []).concat(newPages);
       const neededH = Math.max(cssH, bgContentHeight(cssW), DEFAULT_CANVAS_HEIGHT);
@@ -2367,24 +2465,51 @@
     }
     function resizeLiveCanvas(newCssW, newCssH){
       const temp = snapshotLivePixels();
+      const previousWindowTop = inkWindowTop;
+      const previousWindowH = inkWindowH;
+      cssH = newCssH;
+      note.canvasHeight = newCssH;
+      const window = calculateInkWindow(newCssH);
+      inkWindowTop = window.top; inkWindowH = window.height;
       wrap.style.height = newCssH + 'px';
-      canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
-      canvas.style.height = newCssH + 'px';
+      canvas.width = Math.max(1, Math.round(newCssW * ratio)); canvas.height = Math.max(1, Math.round(inkWindowH * ratio));
+      canvas.style.height = inkWindowH + 'px'; canvas.style.top = inkWindowTop + 'px';
       ctx = canvas.getContext('2d');
       ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, newCssH);
+      // Preserve the old window when possible. If the window moved because of
+      // scrolling, the next vector replay repaints the correct document slice.
+      if(Math.abs(previousWindowTop - inkWindowTop) < 1 && Math.abs(previousWindowH - inkWindowH) < 1){
+        ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, inkWindowH);
+      }
       if(predCanvas){
-        predCanvas.width = newCssW * ratio; predCanvas.height = newCssH * ratio;
-        predCanvas.style.height = newCssH + 'px';
+        predCanvas.width = Math.max(1, Math.round(newCssW * ratio)); predCanvas.height = Math.max(1, Math.round(inkWindowH * ratio));
+        predCanvas.style.height = inkWindowH + 'px'; predCanvas.style.top = inkWindowTop + 'px';
         const pctx2 = predCanvas.getContext('2d');
         pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
       }
-      cssH = newCssH;
       lastCssW = newCssW;
-      note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
+      if(Math.abs(previousWindowTop - inkWindowTop) >= 1 || Math.abs(previousWindowH - inkWindowH) >= 1) renderSavedVectorInk();
       renderBgLayer(newCssW, newCssH);
     }
+
+    let inkWindowRaf = 0;
+    function scheduleInkWindow(){
+      if(inkWindowRaf) return;
+      const viewportH = Math.max(1, scrollEl.clientHeight || 700);
+      const scrollTop = scrollEl.scrollTop || 0;
+      const nearTop = scrollTop < inkWindowTop + INK_OVERSCAN * 0.5;
+      const nearBottom = scrollTop + viewportH > inkWindowTop + inkWindowH - INK_OVERSCAN * 0.5;
+      if(!nearTop && !nearBottom) return;
+      inkWindowRaf = requestAnimationFrame(() => {
+        inkWindowRaf = 0;
+        const next = calculateInkWindow(cssH);
+        if(Math.abs(next.top - inkWindowTop) > 8 || Math.abs(next.height - inkWindowH) > 8){
+          resizeLiveCanvas(wrap.clientWidth, cssH);
+        }
+      });
+    }
+    if(scrollEl) scrollEl.addEventListener('scroll', scheduleInkWindow, { passive:true });
 
     // The canvas's internal pixel grid is only recomputed when we
     // explicitly resize it — nothing was re-syncing it if the canvas's
@@ -2413,7 +2538,7 @@
     // Also catch it the instant you touch down to draw — cheaper than a
     // resize listener catching everything (e.g. a PWA's chrome settling a
     // beat after launch) and guarantees the very first stroke is correct.
-    canvas.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
+    inputLayer.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
 
     let growing = false;
     function growIfNear(edgeY){
@@ -2442,8 +2567,8 @@
     // duration of a stroke and invalidated whenever it could actually move.
     let rectCache = null;
     function invalidateRect(){ rectCache = null; }
-    function canvasRect(){ return rectCache || (rectCache = canvas.getBoundingClientRect()); }
-    canvas.addEventListener('pointerdown', invalidateRect, { capture: true });
+    function canvasRect(){ return rectCache || (rectCache = wrap.getBoundingClientRect()); }
+    inputLayer.addEventListener('pointerdown', invalidateRect, { capture: true });
     window.addEventListener('resize', invalidateRect);
     window.addEventListener('orientationchange', invalidateRect);
     if(scrollEl) scrollEl.addEventListener('scroll', invalidateRect, { passive: true });
@@ -2611,7 +2736,7 @@
     function clearTail(){
       if(!predCtx) return;
       if(!tailBox){ clearPredictive(); return; }
-      predCtx.clearRect(tailBox.x0, tailBox.y0, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0);
+      predCtx.clearRect(tailBox.x0, tailBox.y0 - inkWindowTop, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0);
       tailBox = null;
     }
     function renderLiveTail(extraPt){
@@ -2639,11 +2764,14 @@
         if(p.y + pad > y1) y1 = p.y + pad;
       }
       tailBox = { x0, y0, x1, y1 };
+      predCtx.save();
+      predCtx.translate(0, -inkWindowTop);
       predCtx.globalCompositeOperation = 'source-over';
       predCtx.fillStyle = drawState.color;
       if(all.length === 1){
         const only = all[0];
         stampCircle(predCtx, only.x, only.y, endTaperedRadius(only.r, total - only.cum));
+        predCtx.restore();
         return;
       }
       for(let i = 1; i < all.length; i++){
@@ -2652,6 +2780,7 @@
         const rb = endTaperedRadius(b.r, total - b.cum);
         stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb, strokeDash === 'solid' ? null : a.cum);
       }
+      predCtx.restore();
     }
 
     // The tail is re-rendered at most once per animation frame. Pointer
@@ -2686,11 +2815,11 @@
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
       ctx.clearRect(0, 0, canvas.width / ratio, canvas.height / ratio);
       if(legacyInkImage && legacyInkImage.complete && legacyInkImage.naturalWidth){
-        ctx.drawImage(legacyInkImage, 0, 0, wrap.clientWidth, cssH);
+        ctx.drawImage(legacyInkImage, 0, -inkWindowTop, wrap.clientWidth, cssH);
       }
       const sourceW = note.canvasWidth || wrap.clientWidth;
       const scale = wrap.clientWidth / sourceW;
-      ctx.save(); ctx.scale(scale, scale); renderVectorStrokes(ctx, note.strokes || []); ctx.restore();
+      ctx.save(); ctx.translate(0, -inkWindowTop); ctx.scale(scale, scale); renderVectorStrokes(ctx, note.strokes || []); ctx.restore();
       ctx.restore();
     }
     function appendCurrentStroke(){
@@ -2783,7 +2912,7 @@
       }
     }
 
-    canvas.addEventListener('pointerdown', (e) => {
+    inputLayer.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       noteRecentPen(e);
 
@@ -2840,11 +2969,17 @@
         if(lassoSel){
           const inside = pointInPath(lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })), x, y);
           if(inside){
+            checkpoint(note.id);
+            lassoSel.detached = true;
+            note.strokes = (note.strokes || []).filter(st => !lassoSel.strokes.some(sel => sel.id === st.id));
+            renderSavedVectorInk();
             lassoDragging = true; lassoDragFrom = { x, y };
             lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
+            renderLasso();
             return;
           }
-          lassoDropSelection();
+          if(lassoSel.detached) lassoDropSelection();
+          else { lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = []; clearPredictive(); }
         }
         lassoDrawing = true;
         lassoPath = [{ x, y }];
@@ -2884,7 +3019,7 @@
       stampCircle(ctx, x, y, startR);
     });
 
-    canvas.addEventListener('pointermove', (e) => {
+    inputLayer.addEventListener('pointermove', (e) => {
       noteRecentPen(e);
 
       if(gestureMode === 'draw' && drawing && e.pointerId !== primaryPointerId){
@@ -3066,8 +3201,8 @@
         saveDrawing(); growIfNear(lastY);
       }
     }
-    ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, endPointer));
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    ['pointerup','pointerleave','pointercancel'].forEach(evt => inputLayer.addEventListener(evt, endPointer));
+    inputLayer.addEventListener('contextmenu', (e) => e.preventDefault());
 
 
     // grow the page as you scroll toward the bottom too, not just while drawing —
@@ -3440,7 +3575,8 @@
   }
 
   // ---------- export ----------
-  function exportNote(note, kind){
+  async function exportNote(note, kind){
+    if(note && note.mode === 'draw') await hydrateBackgroundPages(note).catch(() => false);
     const safeTitle = (note.title || 'untitled').replace(/[^a-z0-9\-_ ]/gi,'').trim().replace(/\s+/g,'-').toLowerCase() || 'untitled';
     if(kind === 'md' || kind === 'txt'){
       const content = kind === 'md' ? `# ${note.title || 'Untitled'}\n\n${note.body || ''}` : `${note.title || 'Untitled'}\n\n${note.body || ''}`;
