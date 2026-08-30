@@ -745,6 +745,29 @@
   const GROW_STEP = 800;
   const GROW_MARGIN = 450;
 
+  // iOS/iPadOS Safari silently stops actually drawing to a <canvas> once its
+  // backing store (width*height in real device pixels) gets too large —
+  // there's no error, the pen strokes are just accepted and go nowhere.
+  // A multi-page PDF import easily produces a note tall enough to cross
+  // that line, which is exactly what made ink stop appearing while writing
+  // on top of an imported document (scrolling/navigating stayed smooth
+  // regardless, since that's plain compositor/DOM work that has nothing to
+  // do with canvas size). Keep every canvas's backing store under a safe
+  // budget by lowering the effective pixel ratio once a note gets tall
+  // enough to need it. This only affects backing-store resolution — the
+  // CSS size (layout, scrolling, where strokes land) is untouched; the
+  // only visible cost is slightly softer ink on extremely long notes.
+  const SAFE_CANVAS_AREA = 15 * 1024 * 1024; // ~15 megapixels — comfortably under every known WebKit ceiling
+  const SAFE_CANVAS_DIM = 8000;              // also cap either dimension individually
+  function safeCanvasRatio(cssW, cssH){
+    const want = window.devicePixelRatio || 1;
+    if(!(cssW > 0) || !(cssH > 0)) return want;
+    const byArea = Math.sqrt(SAFE_CANVAS_AREA / (cssW * cssH));
+    const byW = SAFE_CANVAS_DIM / cssW;
+    const byH = SAFE_CANVAS_DIM / cssH;
+    return Math.max(1, Math.min(want, byArea, byW, byH));
+  }
+
   const ICONS = {
     star: (filled) => `<svg viewBox="0 0 24 24" fill="${filled?'currentColor':'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`,
     chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>`,
@@ -1916,7 +1939,6 @@
     const predCanvas = document.getElementById('drawCanvasPredictive');
     const wrap = document.getElementById('canvasWrapEl');
     const scrollEl = document.getElementById('canvasScroll');
-    const ratio = window.devicePixelRatio || 1;
     const initialWidth = wrap.clientWidth;
     const importedHeight = (note.bgPages || []).reduce((sum, page) => {
       if(!page.naturalW || !page.naturalH) return sum;
@@ -1927,6 +1949,11 @@
     // resize happened, which made them seem to load only after scrolling.
     let cssH = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, importedHeight);
     note.canvasHeight = cssH;
+    // The actual ratio used for every canvas belonging to this note session
+    // (see safeCanvasRatio above) — starts at the true device pixel ratio
+    // and only gets scaled down, via resizeLiveCanvas, if the note grows
+    // tall enough to risk exceeding a safe canvas backing-store size.
+    let ratio = safeCanvasRatio(initialWidth, cssH);
     // Recorded so thumbnails (rendered outside this note's own editor,
     // where wrap.clientWidth isn't available) can scale stroke
     // coordinates — which are stored in this width's CSS-pixel space —
@@ -2373,8 +2400,14 @@
       // ~800px of writing. Any newly added canvas space (below on grow,
       // or to the right on a width resync) is simply left blank; nothing
       // existing gets distorted to fill it.
-      const oldCssW = canvas.width / ratio;
-      const oldCssH = canvas.height / ratio;
+      const oldRatio = ratio; // whatever ratio the CURRENT backing store was built at
+      const oldCssW = canvas.width / oldRatio;
+      const oldCssH = canvas.height / oldRatio;
+      // Recompute the safe ratio for the NEW size — as a note grows tall
+      // enough via repeated grows (not just a big import), it can cross
+      // the safe-canvas-size threshold mid-session, so this has to be
+      // re-checked on every resize, not just decided once at setup.
+      ratio = safeCanvasRatio(newCssW, newCssH);
       wrap.style.height = newCssH + 'px';
       canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
       canvas.style.height = newCssH + 'px';
