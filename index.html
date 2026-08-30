@@ -271,16 +271,15 @@
      behind the wrapper's opaque paper colour (the wrapper isn't a stacking
      context, so -1 escaped up to an ancestor) — imports silently never showed.
      Explicit 0/1/2 with the ink canvas positioned keeps the order honest. */
-  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:absolute; top:0; left:0; z-index:1;
+  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:relative; z-index:1;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:2; }
-  #drawInputLayer{ position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; touch-action:none; z-index:3; background:transparent; }
   #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:0; }
   .canvas-shell, .canvas-scroll, .canvas-wrap{ -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   .page-seam{ position:absolute; left:0; right:0; height:1px; background: rgba(128,128,128,0.22); pointer-events:none; }
   .page-seam::after{ content:''; position:absolute; top:1px; left:0; right:0; height:10px; background: linear-gradient(to bottom, rgba(0,0,0,0.12), transparent); }
 
-  .eraser-cursor{ position:absolute; top:0; left:0; width:18px; height:18px; margin-left:-9px; margin-top:-9px; z-index:4;
+  .eraser-cursor{ position:absolute; top:0; left:0; width:18px; height:18px; margin-left:-9px; margin-top:-9px;
     border-radius:50%; border:1.5px solid rgba(255,255,255,0.85); background: rgba(255,255,255,0.12);
     box-shadow: 0 0 0 1px rgba(0,0,0,0.35); pointer-events:none; display:none; z-index:4; }
   .eraser-cursor.show{ display:block; }
@@ -462,7 +461,6 @@
   .note-card:hover{ transform: translateY(-3px); border:none; }
   .card-thumb{ aspect-ratio: 3/4; border-radius: 12px; overflow:hidden; background:#101012;
     border: 1px solid var(--border); box-shadow: 0 8px 22px rgba(0,0,0,0.45); }
-  .card-drawing-thumb{ display:block; width:100%; height:100%; }
   .card-meta{ padding: 10px 2px 0 2px; gap: 3px; align-items:center; text-align:center; }
   .card-title{ font-size:13px; font-weight:600; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
   .card-sub{ justify-content:center; }
@@ -780,6 +778,32 @@
   let query = '';
   let previewMode = false;
   let saveTimer = null;
+  // Tracks, per note, whether a stroke has been drawn that isn't reflected
+  // in note.drawing yet (the persisted PNG encode in saveDrawing() is
+  // async — see there). This used to be a Map of full offscreen <canvas>
+  // bitmaps so a tool/note switch could redraw from memory instead of the
+  // stale note.drawing. That worked, but for a large imported document
+  // the ink canvas can be huge — an offscreen duplicate of it is easily
+  // hundreds of MB, and creating one on every single stroke was enough to
+  // get the whole page's WebView killed for memory pressure (which looks
+  // exactly like "the app crashed and reverted to the notes list"). A
+  // plain Set of note ids costs nothing and is all isBlankNote() actually
+  // needs; see pendingDrawingSaves below for how the redraw case is
+  // handled without a duplicate bitmap.
+  const notesWithPendingInk = new Set();
+  // noteId -> a Promise that resolves once that note's most recent stroke
+  // has finished being persisted to note.drawing. setupCanvas() waits on
+  // this instead of immediately reloading a possibly-stale note.drawing,
+  // so a tool/note switch mid-encode never shows a reverted drawing — it
+  // very briefly shows nothing for that one note instead, without ever
+  // holding a second full-size copy of the canvas in memory.
+  const pendingDrawingSaves = new Map();
+  // Set true for the duration of an in-progress pen/finger stroke (see the
+  // canvas pointerdown/up handlers). scheduleSave() checks this so a mid-
+  // stroke commitMutation() (e.g. the page growing taller while you write)
+  // never lands an IndexedDB write while the pointer is still down — it
+  // just re-arms the timer and fires once the stroke actually lifts.
+  let strokeInProgress = false;
   let mobileShowingMain = false;
   let undoStack = [], redoStack = [];
   let checkpointed = false;
@@ -901,149 +925,26 @@
   const settingsBtn = document.getElementById('settingsBtn');
 
   function uid(p){ return (p||'n_') + Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
-  function clone(o){ return JSON.parse(JSON.stringify(o)); }
+  // A plain JSON.stringify+parse round-trip is the wrong tool once a note
+  // can hold multiple megabytes of base64 text (a drawing, or a multi-page
+  // PDF import's background pages): every single checkpoint() — including
+  // ones with nothing to do with drawing at all, like focusing the title
+  // field or pinning a note — was re-serializing and re-parsing that whole
+  // string for every note in the app, every time. Strings are immutable in
+  // JS, so there's no correctness reason to touch their contents at all;
+  // this clones the actual object/array *structure* (which is what
+  // undo/redo actually needs isolated) and just copies the reference for
+  // everything else, which is why this is safe and dramatically cheaper.
+  function clone(o){
+    if(o === null || typeof o !== 'object') return o;
+    if(Array.isArray(o)) return o.map(clone);
+    const out = {};
+    for(const k in o){ if(Object.prototype.hasOwnProperty.call(o, k)) out[k] = clone(o[k]); }
+    return out;
+  }
   function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
   function fmtDate(ts){ const d = new Date(ts); return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'}); }
   function hexToRgba(hex, a){ const h = hex.replace('#',''); const r=parseInt(h.substring(0,2),16), g=parseInt(h.substring(2,4),16), b=parseInt(h.substring(4,6),16); return `rgba(${r},${g},${b},${a})`; }
-
-  // ---------- vector ink model ----------
-  // Ink is persisted as small, independent stroke objects. The points use a
-  // stable document coordinate system (note.canvasWidth); the current canvas
-  // width is only a render scale. This keeps a stroke cheap to append and
-  // prevents imported background bitmaps from entering the write path.
-  function normalizeStroke(stroke){
-    if(!stroke || !Array.isArray(stroke.points)) return null;
-    const points = [];
-    let cum = 0;
-    stroke.points.forEach((p, i) => {
-      if(!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) return;
-      const point = { x:+p.x, y:+p.y, r:Math.max(0.1, Number.isFinite(+p.r) ? +p.r : 1), cum:0 };
-      if(points.length) cum += Math.hypot(point.x - points[points.length-1].x, point.y - points[points.length-1].y);
-      point.cum = cum;
-      points.push(point);
-    });
-    if(!points.length) return null;
-    return {
-      id: stroke.id || uid('s_'),
-      tool: stroke.tool || 'pen',
-      color: stroke.color || '#111111',
-      alpha: Math.max(0.05, Math.min(1, stroke.alpha == null ? 1 : +stroke.alpha)),
-      straight: !!stroke.straight,
-      dash: stroke.dash || 'solid',
-      penSize: Number.isFinite(+stroke.penSize) ? +stroke.penSize : undefined,
-      points
-    };
-  }
-  function normalizeNote(note){
-    if(!note || typeof note !== 'object') return note;
-    // One-time compatibility bridge for the old flattened ink field. It is
-    // retained separately so new vector edits never overwrite it, while all
-    // new code uses strokes. Fresh notes have no legacyInk field.
-    if(note.drawing && !note.legacyInk) note.legacyInk = note.drawing;
-    delete note.drawing;
-    note.strokes = Array.isArray(note.strokes) ? note.strokes.map(normalizeStroke).filter(Boolean) : [];
-    note.bgPages = Array.isArray(note.bgPages) ? note.bgPages.map(page => page && typeof page === 'object' ? Object.assign({}, page, { id: page.id || uid('pg_') }) : null).filter(Boolean) : [];
-    note.vectorVersion = 2;
-    return note;
-  }
-  function normalizeNotes(list){ return (Array.isArray(list) ? list : []).map(normalizeNote).filter(Boolean); }
-  function noteHasInk(note){ return !!(note && ((note.strokes && note.strokes.length) || note.legacyInk)); }
-
-  function vectorHashNoise(x, y, k){
-    const v = Math.sin(x * 12.9898 + y * 78.233 + k * 37.719) * 43758.5453;
-    return v - Math.floor(v);
-  }
-  function vectorDashOn(stroke, cum){
-    const dash = stroke.dash || 'solid';
-    if(dash === 'solid') return true;
-    const size = Math.max(1, stroke.penSize || 5);
-    const unit = Math.max(6, size * (dash === 'dotted' ? 0.9 : 1.8));
-    const period = dash === 'dotted' ? unit * 2 : unit * 2.2;
-    const on = dash === 'dotted' ? unit * 0.55 : unit * 1.2;
-    return (cum % period) < on;
-  }
-  function vectorStampCircle(targetCtx, x, y, r, tool){
-    if(tool === 'pencil'){
-      const rad = Math.max(0.4, r);
-      const prevAlpha = targetCtx.globalAlpha;
-      for(let i = 0; i < 3; i++){
-        const a = vectorHashNoise(x, y, i) * Math.PI * 2;
-        const d = vectorHashNoise(y, x, i + 5) * rad * 0.75;
-        targetCtx.globalAlpha = prevAlpha * (0.3 + 0.45 * vectorHashNoise(x + i, y - i, 9));
-        targetCtx.beginPath();
-        targetCtx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d, rad * (0.55 + 0.35 * vectorHashNoise(x, y, i + 2)), 0, Math.PI * 2);
-        targetCtx.fill();
-      }
-      targetCtx.globalAlpha = prevAlpha;
-      return;
-    }
-    targetCtx.beginPath();
-    targetCtx.arc(x, y, Math.max(0.4, r), 0, Math.PI * 2);
-    targetCtx.fill();
-  }
-  function vectorStampSegment(targetCtx, a, b, stroke){
-    const dist = Math.hypot(b.x - a.x, b.y - a.y);
-    const steps = Math.max(1, Math.ceil(dist / 1.4));
-    for(let i = 1; i <= steps; i++){
-      const t = i / steps;
-      const cum = a.cum + dist * t;
-      if(!vectorDashOn(stroke, cum)) continue;
-      vectorStampCircle(targetCtx, a.x + (b.x-a.x)*t, a.y + (b.y-a.y)*t, a.r + (b.r-a.r)*t, stroke.tool);
-    }
-  }
-  function vectorEndRadius(stroke, r, distanceFromEnd){
-    if(stroke.tool !== 'pen' || stroke.straight) return r;
-    const t = Math.min(1, Math.max(0, distanceFromEnd) / 16);
-    return r * (0.18 + 0.82 * t);
-  }
-  function renderVectorStroke(targetCtx, stroke){
-    const pts = stroke && stroke.points;
-    if(!pts || !pts.length) return;
-    let renderPts = pts;
-    if(stroke.straight && pts.length > 1){
-      const first = pts[0], last = pts[pts.length - 1];
-      renderPts = [first, Object.assign({}, last, { cum:Math.hypot(last.x-first.x, last.y-first.y) })];
-    }
-    const total = renderPts[renderPts.length - 1].cum || 0;
-    targetCtx.save();
-    targetCtx.globalCompositeOperation = 'source-over';
-    targetCtx.globalAlpha = stroke.alpha == null ? 1 : stroke.alpha;
-    targetCtx.fillStyle = stroke.color || '#111111';
-    // The live engine stamps the touch-down point immediately. Replaying it
-    // explicitly avoids a tiny gap before the first sampled segment.
-    vectorStampCircle(targetCtx, renderPts[0].x, renderPts[0].y, renderPts[0].r, stroke.tool);
-    for(let i = 1; i < renderPts.length; i++){
-      const a = renderPts[i-1], b = renderPts[i];
-      const ra = vectorEndRadius(stroke, a.r, total - a.cum);
-      const rb = vectorEndRadius(stroke, b.r, total - b.cum);
-      vectorStampSegment(targetCtx, {x:a.x,y:a.y,r:ra,cum:a.cum}, {x:b.x,y:b.y,r:rb,cum:b.cum}, stroke);
-    }
-    targetCtx.restore();
-  }
-  function renderVectorStrokes(targetCtx, strokes){
-    const list = strokes || [];
-    const flat = list.some(stroke => stroke && ((stroke.alpha == null ? 1 : stroke.alpha) < 0.999 || stroke.tool === 'highlighter' || stroke.tool === 'pencil'));
-    let layer = null, layerCtx = null;
-    if(flat && targetCtx.canvas){
-      layer = document.createElement('canvas');
-      layer.width = targetCtx.canvas.width; layer.height = targetCtx.canvas.height;
-      layerCtx = layer.getContext('2d');
-    }
-    list.forEach(stroke => {
-      if(!stroke) return;
-      const translucent = (stroke.alpha == null ? 1 : stroke.alpha) < 0.999 || stroke.tool === 'highlighter' || stroke.tool === 'pencil';
-      if(!translucent || !layerCtx){ renderVectorStroke(targetCtx, stroke); return; }
-      layerCtx.setTransform(1, 0, 0, 1, 0, 0);
-      layerCtx.clearRect(0, 0, layer.width, layer.height);
-      layerCtx.setTransform(targetCtx.getTransform());
-      renderVectorStroke(layerCtx, Object.assign({}, stroke, { alpha:1 }));
-      targetCtx.save();
-      targetCtx.setTransform(1, 0, 0, 1, 0, 0);
-      targetCtx.globalAlpha = stroke.alpha == null ? 1 : stroke.alpha;
-      targetCtx.drawImage(layer, 0, 0);
-      targetCtx.restore();
-    });
-  }
 
   // ---------- persistence (on-device IndexedDB) ----------
   // Switched from localStorage to IndexedDB: same idea (data lives only in
@@ -1057,9 +958,6 @@
   const STORE_PREFIX = 'ipadnotes:';
   const IDB_NAME = 'ipadnotes-db';
   const IDB_STORE = 'kv';
-  const NOTES_INDEX_KEY = STORE_PREFIX+'notes:index';
-  const NOTE_KEY_PREFIX = STORE_PREFIX+'note:';
-  const BG_PAGE_KEY_PREFIX = STORE_PREFIX+'bgpage:';
 
   let dbPromise = null;
   function openDb(){
@@ -1089,43 +987,6 @@
       tx.onerror = () => reject(tx.error);
     }));
   }
-  function noteForStorage(note){
-    const stored = Object.assign({}, note);
-    stored.bgPages = (note.bgPages || []).map(page => {
-      const meta = Object.assign({}, page);
-      delete meta.src;
-      return meta;
-    });
-    return stored;
-  }
-  function storeBackgroundPages(pages){
-    const unique = new Map((pages || []).filter(page => page && page.id && page.src).map(page => [page.id, page]));
-    return Promise.all(Array.from(unique.values()).map(page => idbSet(BG_PAGE_KEY_PREFIX + page.id, page)));
-  }
-  async function hydrateBackgroundPages(note){
-    const pages = note.bgPages || [];
-    const loaded = await Promise.all(pages.map(async page => {
-      if(page.src || !page.id) return page;
-      const stored = await idbGet(BG_PAGE_KEY_PREFIX + page.id);
-      return stored ? Object.assign({}, page, stored) : page;
-    }));
-    const changed = loaded.some((page, i) => page !== pages[i] && !!page.src);
-    if(changed) note.bgPages = loaded;
-    return changed;
-  }
-  async function readNotesFromDb(){
-    const ids = await idbGet(NOTES_INDEX_KEY);
-    if(Array.isArray(ids)){
-      const loaded = await Promise.all(ids.map(id => idbGet(NOTE_KEY_PREFIX + id)));
-      return normalizeNotes(loaded.filter(Boolean));
-    }
-    return normalizeNotes((await idbGet(STORE_PREFIX+'notes')) || []);
-  }
-  async function writeAllNotesToDb(list){
-    const normalized = normalizeNotes(list);
-    await Promise.all(normalized.map(note => idbSet(NOTE_KEY_PREFIX + note.id, noteForStorage(note))));
-    await idbSet(NOTES_INDEX_KEY, normalized.map(note => note.id));
-  }
 
   async function loadState(){
     // Ask the browser to mark this site's storage as "persistent" — it
@@ -1134,11 +995,8 @@
     // own storage sandbox gets.
     try{ if(navigator.storage && navigator.storage.persist) await navigator.storage.persist(); }catch(e){}
 
-    let hadPerNoteStore = false;
     try{
-      const noteIndex = await idbGet(NOTES_INDEX_KEY);
-      hadPerNoteStore = Array.isArray(noteIndex);
-      notes = hadPerNoteStore ? await readNotesFromDb() : normalizeNotes((await idbGet(STORE_PREFIX+'notes')) || []);
+      notes = (await idbGet(STORE_PREFIX+'notes')) || [];
       folders = (await idbGet(STORE_PREFIX+'folders')) || [];
       theme = (await idbGet(STORE_PREFIX+'theme')) || 'dark';
     }catch(e){
@@ -1153,19 +1011,16 @@
         const oldNotes = localStorage.getItem(STORE_PREFIX+'notes');
         const oldFolders = localStorage.getItem(STORE_PREFIX+'folders');
         const oldTheme = localStorage.getItem(STORE_PREFIX+'theme');
-        if(oldNotes) notes = normalizeNotes(JSON.parse(oldNotes));
+        if(oldNotes) notes = JSON.parse(oldNotes);
         if(oldFolders) folders = JSON.parse(oldFolders);
         if(oldTheme) theme = oldTheme;
         if(oldNotes || oldFolders){
+          await idbSet(STORE_PREFIX+'notes', notes);
           await idbSet(STORE_PREFIX+'folders', folders);
           await idbSet(STORE_PREFIX+'theme', theme);
         }
       }catch(e){}
     }
-    notes = normalizeNotes(notes);
-    const inlinePages = notes.flatMap(note => (note.bgPages || []).filter(page => page && page.src));
-    if(inlinePages.length){ try{ await storeBackgroundPages(inlinePages); }catch(e){} }
-    if((!hadPerNoteStore || inlinePages.length) && notes.length){ try{ await writeAllNotesToDb(notes); }catch(e){} }
   }
   let toastTimer = null;
   function showToast(text){
@@ -1176,24 +1031,23 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 1200);
   }
-  let pendingNoteIds = new Set();
-  let pendingFullNotesSave = false;
   async function persistNotes(){
-    const idsToSave = pendingFullNotesSave ? new Set(notes.map(note => note.id)) : new Set(pendingNoteIds);
-    const snapshot = notes.slice();
-    try{
-      const notesToSave = snapshot.filter(note => idsToSave.has(note.id)).map(normalizeNote);
-      await Promise.all(notesToSave.map(note => idbSet(NOTE_KEY_PREFIX + note.id, noteForStorage(note))));
-      await idbSet(NOTES_INDEX_KEY, snapshot.map(note => note.id));
-      pendingNoteIds.clear(); pendingFullNotesSave = false;
-      showToast('Saved');
-    }catch(e){ console.error('Save failed — storage may be full', e); alert('Could not save. Your device storage may be full — try exporting a backup and clearing some old notes.'); }
+    try{ await idbSet(STORE_PREFIX+'notes', notes); showToast('Saved'); }
+    catch(e){ console.error('Save failed — storage may be full', e); alert('Could not save. Your device storage may be full — try exporting a backup and clearing some old notes.'); }
   }
   async function persistFolders(){ try{ await idbSet(STORE_PREFIX+'folders', folders); }catch(e){ console.error(e); } }
   async function persistTheme(){ try{ await idbSet(STORE_PREFIX+'theme', theme); }catch(e){ console.error(e); } }
-  function scheduleSave(noteId){
-    if(noteId) pendingNoteIds.add(noteId); else pendingFullNotesSave = true;
-    clearTimeout(saveTimer); saveTimer = setTimeout(persistNotes, 350);
+  // 900ms (rather than firing right after every stroke) means a burst of
+  // quick pen lifts while writing normally only ever produces one
+  // IndexedDB write, not one per stroke. If a stroke is still in progress
+  // when the timer fires (a mid-stroke canvas grow can trigger this),
+  // don't write yet — just re-arm for another 900ms and check again.
+  function scheduleSave(){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function fire(){
+      if(strokeInProgress){ saveTimer = setTimeout(fire, 900); return; }
+      persistNotes();
+    }, 900);
   }
 
   // ---------- backup / restore to a real file ----------
@@ -1234,30 +1088,27 @@
     URL.revokeObjectURL(url);
   }
 
-  async function backupToFile(){
-    await Promise.all(notes.map(note => hydrateBackgroundPages(note).catch(() => false)));
-    const payload = { app: 'forgenotes-backup', version: 2, exportedAt: Date.now(), notes: normalizeNotes(notes), folders };
+  function backupToFile(){
+    const payload = { app: 'forgenotes-backup', version: 1, exportedAt: Date.now(), notes, folders };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const stamp = new Date().toISOString().slice(0,10);
     saveOrShareFile(blob, `notes-backup-${stamp}.json`, 'application/json');
   }
   function restoreFromFile(file){
     const reader = new FileReader();
-    reader.onload = async () => {
+    reader.onload = () => {
       try{
         const payload = JSON.parse(reader.result);
         if(!payload || !Array.isArray(payload.notes)) throw new Error('bad file');
         const mode = confirm(`This backup has ${payload.notes.length} note(s) and ${payload.folders ? payload.folders.length : 0} folder(s).\n\nOK = Merge into your current notes\nCancel = Replace everything with this backup`);
-        const incoming = normalizeNotes(payload.notes);
-        await storeBackgroundPages(incoming.flatMap(note => note.bgPages || []));
         checkpoint();
         if(mode){
           const existingIds = new Set(notes.map(n => n.id));
-          incoming.forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
+          payload.notes.forEach(n => { if(!existingIds.has(n.id)) notes.push(n); });
           const existingFolderIds = new Set(folders.map(f => f.id));
           (payload.folders||[]).forEach(f => { if(!existingFolderIds.has(f.id)) folders.push(f); });
         } else {
-          notes = incoming;
+          notes = payload.notes;
           folders = payload.folders || [];
         }
         commitMutation(); persistFolders(); renderAll();
@@ -1299,25 +1150,18 @@
     if(type === 'application/json' || ext === 'json') return 'json';
     return 'other';
   }
-  function yieldToMain(){
-    return new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-  }
-  // Decodes an image into a bounded canvas-backed page. Keeping imported
-  // pages near their display resolution avoids enormous PNG encodes and keeps
-  // the browser responsive when a camera image is much larger than the note.
+  // Decodes an image file into a canvas-backed PNG page. Tries createImageBitmap
+  // first (it can decode HEIC on Safari where <img> can't), then falls back to
+  // an <img> decode. Rejects if neither works, so the caller can say why.
   async function imageFileToPage(file){
-    const MAX_IMPORT_PX = 1800;
     try{
       if(window.createImageBitmap){
         const bitmap = await createImageBitmap(file);
-        const scale = Math.min(1, MAX_IMPORT_PX / Math.max(bitmap.width, bitmap.height));
-        const w = Math.max(1, Math.round(bitmap.width * scale));
-        const h = Math.max(1, Math.round(bitmap.height * scale));
         const off = document.createElement('canvas');
-        off.width = w; off.height = h;
-        off.getContext('2d').drawImage(bitmap, 0, 0, w, h);
+        off.width = bitmap.width; off.height = bitmap.height;
+        off.getContext('2d').drawImage(bitmap, 0, 0);
         if(bitmap.close) bitmap.close();
-        return { src: off.toDataURL('image/png'), naturalW: w, naturalH: h };
+        return { src: off.toDataURL('image/png'), naturalW: off.width, naturalH: off.height };
       }
     }catch(err){ /* fall through to the <img> path below */ }
     const src = await fileToDataUrl(file);
@@ -1327,14 +1171,11 @@
       el.onerror = () => reject(new Error('decode failed'));
       el.src = src;
     });
-    const rawW = img.naturalWidth || 0, rawH = img.naturalHeight || 0;
-    if(!rawW || !rawH) throw new Error('decode failed');
-    const scale = Math.min(1, MAX_IMPORT_PX / Math.max(rawW, rawH));
-    const w = Math.max(1, Math.round(rawW * scale));
-    const h = Math.max(1, Math.round(rawH * scale));
+    const w = img.naturalWidth || 0, h = img.naturalHeight || 0;
+    if(!w || !h) throw new Error('decode failed');
     const off = document.createElement('canvas');
     off.width = w; off.height = h;
-    off.getContext('2d').drawImage(img, 0, 0, w, h);
+    off.getContext('2d').drawImage(img, 0, 0);
     return { src: off.toDataURL('image/png'), naturalW: w, naturalH: h };
   }
   let pdfJsLoadPromise = null;
@@ -1365,18 +1206,19 @@
       const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
       const pages = [];
       for(let i = 1; i <= pdf.numPages; i++){
-        await yieldToMain();
         const page = await pdf.getPage(i);
-        const baseViewport = page.getViewport({ scale: 1 });
-        const targetWidth = Math.min(1800, Math.max(1200, Math.round((window.innerWidth || 900) * (window.devicePixelRatio || 1))));
-        const renderScale = Math.min(2, targetWidth / Math.max(1, baseViewport.width));
-        const viewport = page.getViewport({ scale: renderScale });
+        const viewport = page.getViewport({ scale: 1.6 }); // still crisp enough for text/lines drawn on top
         const off = document.createElement('canvas');
         off.width = Math.round(viewport.width); off.height = Math.round(viewport.height);
         await page.render({ canvasContext: off.getContext('2d'), viewport }).promise;
-        pages.push({ src: off.toDataURL('image/jpeg', 0.88), naturalW: off.width, naturalH: off.height });
-        if(page.cleanup) page.cleanup();
-        await yieldToMain();
+        // These pages are a fixed, never-edited background sitting *under*
+        // the (separately stored, transparent) ink layer, so they don't
+        // need PNG's lossless/alpha support — a PDF page has no
+        // transparency of its own. JPEG at a high quality setting comes
+        // out roughly 10x smaller per page than 2x-scale PNG, which is
+        // what made a many-page import balloon note.bgPages and, with it,
+        // the size of every undo snapshot and IndexedDB write.
+        pages.push({ src: off.toDataURL('image/jpeg', 0.82), naturalW: off.width, naturalH: off.height });
       }
       if(!pages.length) throw new Error('That PDF has no pages in it.');
       return pages;
@@ -1400,12 +1242,10 @@
       alert(err.message || 'Could not import that file.');
       return;
     }
-    pages = pages.map(page => Object.assign({}, page, { id: page.id || uid('pg_') }));
-    await storeBackgroundPages(pages);
     checkpoint();
     const note = {
       id: uid(), title: file.name ? file.name.replace(/\.[^.]+$/, '') : '', body: '', mode: 'draw',
-      strokes: [], vectorVersion: 2, canvasBg: 'grid',
+      drawing: null, strokes: [], canvasBg: 'grid',
       paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' },
       canvasHeight: DEFAULT_CANVAS_HEIGHT,
       bgPages: pages,
@@ -1445,25 +1285,20 @@
   // next stroke. Passing noteId lets the hot path (drawing) skip that cost;
   // omitting it keeps the safe, general behavior for rarer, non-hot-path
   // mutations (trashing/pinning/moving a note from a list, etc.).
-  function snapshotNote(note){
-    const copy = Object.assign({}, note);
-    copy.strokes = clone(note.strokes || []);
-    copy.tags = Array.isArray(note.tags) ? note.tags.slice() : [];
-    copy.bgPages = (note.bgPages || []).map(page => {
-      const meta = Object.assign({}, page);
-      delete meta.src;
-      return meta;
-    });
-    return copy;
-  }
+  // Shallow-copies the target note instead of clone()'s JSON round-trip.
+  // This is only ever called from the drawing hot path (checkpoint(note.id)
+  // in saveDrawing()), where the only fields that ever change are drawing/
+  // updatedAt/canvasHeight — all reassigned wholesale, never mutated
+  // in-place — so a shallow {...n} is exactly as safe for undo as a deep
+  // clone here, without re-serializing the note's ink PNG (and any
+  // imported PDF background pages) on every single pen lift.
   function snapshotNotesExcept(noteId){
-    return notes.map(n => (n.id === noteId ? snapshotNote(n) : n));
+    return notes.map(n => (n.id === noteId ? {...n} : n));
   }
-  function snapshotAllNotes(){ return notes.map(snapshotNote); }
-  function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : snapshotAllNotes()); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
+  function checkpoint(noteId){ if(checkpointed) return; undoStack.push(noteId ? snapshotNotesExcept(noteId) : clone(notes)); if(undoStack.length>50) undoStack.shift(); redoStack=[]; checkpointed=true; }
   function commitMutation(){ checkpointed=false; scheduleSave(); }
-  function doUndo(){ if(!undoStack.length) return; redoStack.push(snapshotAllNotes()); notes=undoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
-  function doRedo(){ if(!redoStack.length) return; undoStack.push(snapshotAllNotes()); notes=redoStack.pop(); checkpointed=false; scheduleSave(); renderAll(); }
+  function doUndo(){ if(!undoStack.length) return; redoStack.push(clone(notes)); notes=undoStack.pop(); checkpointed=false; notesWithPendingInk.clear(); pendingDrawingSaves.clear(); scheduleSave(); renderAll(); }
+  function doRedo(){ if(!redoStack.length) return; undoStack.push(clone(notes)); notes=redoStack.pop(); checkpointed=false; notesWithPendingInk.clear(); pendingDrawingSaves.clear(); scheduleSave(); renderAll(); }
 
   // ---------- markdown ----------
   function renderMarkdown(src){
@@ -1541,7 +1376,7 @@
     // the handler instead of permanently stacking another one on top of it.
     document.querySelectorAll('[data-nav]').forEach(el => { el.onclick = () => {
       const openNote = activeId && activeId !== '__trash__' ? notes.find(n => n.id === activeId) : null;
-      if(openNote && isBlankNote(openNote)) notes = notes.filter(n => n.id !== openNote.id);
+      if(openNote && isBlankNote(openNote)){ notes = notes.filter(n => n.id !== openNote.id); notesWithPendingInk.delete(openNote.id); pendingDrawingSaves.delete(openNote.id); }
       nav = el.dataset.nav; activeFolderId = null; tab = 'all'; activeId = null; mobileShowingMain = false;
       renderAll();
     }; });
@@ -1562,12 +1397,71 @@
   }
 
   // ---------- grid ----------
+  // Simplified, globally-usable stroke renderer for thumbnails/exports —
+  // these run outside any open note's editor, so they can't reach the
+  // full-fidelity replayStroke() living inside setupCanvas()'s closure
+  // (pencil grain, dashed highlighter, etc.). A plain variable-width
+  // polyline is indistinguishable at thumbnail size and is all a small
+  // preview needs.
+  function drawStrokesSimple(ctx2, strokes){
+    (strokes || []).forEach(s => {
+      const pts = s.points;
+      if(!pts || !pts.length) return;
+      ctx2.save();
+      ctx2.globalAlpha = s.alpha == null ? 1 : s.alpha;
+      ctx2.fillStyle = s.color; ctx2.strokeStyle = s.color;
+      ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
+      if(pts.length === 1){
+        ctx2.beginPath();
+        ctx2.arc(pts[0].x, pts[0].y, Math.max(0.4, pts[0].r), 0, Math.PI * 2);
+        ctx2.fill();
+      } else {
+        for(let i = 1; i < pts.length; i++){
+          const a = pts[i - 1], b = pts[i];
+          ctx2.beginPath();
+          ctx2.lineWidth = Math.max(0.6, a.r + b.r);
+          ctx2.moveTo(a.x, a.y); ctx2.lineTo(b.x, b.y);
+          ctx2.stroke();
+        }
+      }
+      ctx2.restore();
+    });
+  }
+  // Cached by note id + updatedAt, so a note's thumbnail is only ever
+  // actually re-rendered once per edit (when the grid next asks for it),
+  // not once per stroke — and even then it's a small, fixed-size canvas,
+  // not the whole page, so the cost doesn't scale with page size either.
+  const thumbCache = new Map();
+  function getDrawThumb(n){
+    if(n.drawing) return n.drawing; // legacy/lasso-flattened raster note — already an image
+    if(!n.strokes || !n.strokes.length) return null;
+    const cached = thumbCache.get(n.id);
+    if(cached && cached.v === n.updatedAt) return cached.url;
+    const W = 220;
+    const srcW = n.pageWidth || 800;
+    const scale = W / srcW;
+    const srcH = Math.min(n.canvasHeight || DEFAULT_CANVAS_HEIGHT, 1500); // just the top of the page
+    const H = Math.max(1, Math.round(srcH * scale));
+    const off = document.createElement('canvas');
+    off.width = W; off.height = H;
+    const octx = off.getContext('2d');
+    octx.fillStyle = (n.paper && n.paper.paperColor) || '#ffffff';
+    octx.fillRect(0, 0, W, H);
+    octx.save();
+    octx.scale(scale, scale);
+    drawStrokesSimple(octx, n.strokes);
+    octx.restore();
+    const url = off.toDataURL('image/png');
+    thumbCache.set(n.id, { v: n.updatedAt, url });
+    return url;
+  }
   function noteThumb(n){
     const folder = folderById(n.folderId);
     const accent = folder ? folder.color : '#3d7fff';
     if((n.mode||'text') === 'draw'){
-      if(noteHasInk(n)){
-        return `<div class="card-thumb"><canvas class="card-drawing-thumb" data-vector-thumb="${n.id}" aria-hidden="true"></canvas></div>`;
+      const thumbSrc = getDrawThumb(n);
+      if(thumbSrc){
+        return `<div class="card-thumb"><img src="${thumbSrc}" alt="" /></div>`;
       }
       const bgColor = getPaper(n).paperColor;
       return `<div class="card-thumb" style="background:${bgColor};"><div class="draw-empty">${ICONS.pen}</div></div>`;
@@ -1659,28 +1553,6 @@
       checkpoint(); n.trashed = true; n.trashedAt = Date.now(); n.pinned = false;
       commitMutation(); renderAll();
     }));
-    renderVectorThumbnails();
-  }
-
-  function renderVectorThumbnails(){
-    document.querySelectorAll('[data-vector-thumb]').forEach(canvasEl => {
-      const note = notes.find(n => n.id === canvasEl.dataset.vectorThumb);
-      if(!note) return;
-      const w = Math.max(1, canvasEl.clientWidth * 2);
-      const h = Math.max(1, canvasEl.clientHeight * 2);
-      canvasEl.width = w; canvasEl.height = h;
-      const c = canvasEl.getContext('2d');
-      c.fillStyle = getPaper(note).paperColor; c.fillRect(0, 0, w, h);
-      const sourceW = note.canvasWidth || w;
-      const scale = w / sourceW;
-      const paintVectors = () => { c.save(); c.scale(scale, scale); renderVectorStrokes(c, note.strokes || []); c.restore(); };
-      if(note.legacyInk){
-        const img = new Image();
-        img.onload = () => { c.drawImage(img, 0, 0, w, h); paintVectors(); };
-        img.onerror = paintVectors;
-        img.src = note.legacyInk;
-      } else paintVectors();
-    });
   }
 
   function renderEmptyGrid(){
@@ -1730,6 +1602,7 @@
     mainEl.querySelectorAll('[data-forget]').forEach(b => b.addEventListener('click', () => {
       if(!confirm("Permanently delete this note? This can't be undone.")) return;
       notes = notes.filter(x => x.id !== b.dataset.forget);
+      notesWithPendingInk.delete(b.dataset.forget); pendingDrawingSaves.delete(b.dataset.forget);
       scheduleSave(); renderAll();
     }));
   }
@@ -1911,7 +1784,6 @@
             <canvas id="drawCanvasBg"></canvas>
             <canvas id="drawCanvas"></canvas>
             <canvas id="drawCanvasPredictive"></canvas>
-            <div id="drawInputLayer" aria-hidden="true"></div>
             <div class="eraser-cursor" id="eraserCursor"></div>
           </div>
         </div>
@@ -2041,14 +1913,11 @@
   function setupCanvas(note){
     const canvas = document.getElementById('drawCanvas');
     if(!canvas) return;
-    const inputLayer = document.getElementById('drawInputLayer') || canvas;
     const predCanvas = document.getElementById('drawCanvasPredictive');
     const wrap = document.getElementById('canvasWrapEl');
     const scrollEl = document.getElementById('canvasScroll');
     const ratio = window.devicePixelRatio || 1;
     const initialWidth = wrap.clientWidth;
-    if(!note.canvasWidth) note.canvasWidth = initialWidth;
-    let legacyInkImage = null;
     const importedHeight = (note.bgPages || []).reduce((sum, page) => {
       if(!page.naturalW || !page.naturalH) return sum;
       return sum + (page.naturalH / page.naturalW) * initialWidth;
@@ -2058,46 +1927,52 @@
     // resize happened, which made them seem to load only after scrolling.
     let cssH = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, importedHeight);
     note.canvasHeight = cssH;
-    const INK_OVERSCAN = 320;
-    let inkWindowTop = 0;
-    let inkWindowH = Math.min(cssH, Math.max(800, (scrollEl.clientHeight || 700) + INK_OVERSCAN * 2));
-    function calculateInkWindow(docH){
-      const viewportH = Math.max(1, scrollEl.clientHeight || 700);
-      const height = Math.min(docH, Math.max(800, viewportH + INK_OVERSCAN * 2));
-      const maxTop = Math.max(0, docH - height);
-      const top = Math.min(maxTop, Math.max(0, (scrollEl.scrollTop || 0) - INK_OVERSCAN));
-      return { top, height };
-    }
-    function sizeCanvasTo(newCssH, preserveOldCssH, paintStored=true){
+    // Recorded so thumbnails (rendered outside this note's own editor,
+    // where wrap.clientWidth isn't available) can scale stroke
+    // coordinates — which are stored in this width's CSS-pixel space —
+    // down to thumbnail size correctly.
+    note.pageWidth = wrap.clientWidth || note.pageWidth || 800;
+
+    function sizeCanvasTo(newCssH, preserveOldCssH){
       const cssW = wrap.clientWidth;
-      const window = calculateInkWindow(newCssH);
-      inkWindowTop = window.top; inkWindowH = window.height;
       wrap.style.height = newCssH + 'px';
-      canvas.width = Math.max(1, Math.round(cssW * ratio)); canvas.height = Math.max(1, Math.round(inkWindowH * ratio));
-      canvas.style.height = inkWindowH + 'px'; canvas.style.top = inkWindowTop + 'px';
+      canvas.width = cssW * ratio; canvas.height = newCssH * ratio;
+      canvas.style.height = newCssH + 'px';
       const ctx2 = canvas.getContext('2d');
       ctx2.scale(ratio, ratio); ctx2.lineCap = 'round'; ctx2.lineJoin = 'round';
-      const sourceW = note.canvasWidth || cssW;
-      if(!note.canvasWidth) note.canvasWidth = cssW;
-      const vectorScale = cssW / sourceW;
-      const paintVectors = () => {
-        ctx2.save(); ctx2.translate(0, -inkWindowTop); ctx2.scale(vectorScale, vectorScale);
-        renderVectorStrokes(ctx2, note.strokes || []); ctx2.restore();
-      };
-      if(paintStored){
-        if(note.legacyInk){
+      const pending = pendingDrawingSaves.get(note.id);
+      const drawFromNoteDrawing = () => {
+        // note.drawing, if present, is a frozen legacy/lasso-flattened
+        // base layer (see saveDrawing()) — drawn first, underneath.
+        // Anything drawn since then lives in note.strokes and is replayed
+        // on top via the exact same stamping code used live, which is
+        // synchronous and cheap regardless of page size (no image
+        // decode involved at all for a note with no legacy layer).
+        if(note.drawing){
           const img = new Image();
-          legacyInkImage = img;
-          img.onload = () => renderSavedVectorInk();
-          img.onerror = paintVectors;
-          img.src = note.legacyInk;
-        } else { legacyInkImage = null; paintVectors(); }
+          img.onload = () => {
+            ctx2.drawImage(img, 0, 0, cssW, preserveOldCssH || newCssH);
+            replayAllStrokes(ctx2, note.strokes);
+          };
+          img.src = note.drawing;
+        } else {
+          replayAllStrokes(ctx2, note.strokes);
+        }
+      };
+      if(pending){
+        // Only ever set while a rare lasso edit's flatten-to-image is
+        // still encoding (see saveDrawing()) — plain drawing no longer
+        // goes through an async save at all, so this gap essentially
+        // never affects ordinary writing.
+        pending.then(drawFromNoteDrawing);
+      } else {
+        drawFromNoteDrawing();
       }
       // Keep the predictive overlay canvas pixel-for-pixel aligned with the
-      // bounded main canvas; it is moved with the same document-space window.
+      // main canvas so a predicted stroke lines up exactly with the real one.
       if(predCanvas){
-        predCanvas.width = Math.max(1, Math.round(cssW * ratio)); predCanvas.height = Math.max(1, Math.round(inkWindowH * ratio));
-        predCanvas.style.height = inkWindowH + 'px'; predCanvas.style.top = inkWindowTop + 'px';
+        predCanvas.width = cssW * ratio; predCanvas.height = newCssH * ratio;
+        predCanvas.style.height = newCssH + 'px';
         const pctx = predCanvas.getContext('2d');
         pctx.scale(ratio, ratio); pctx.lineCap = 'round'; pctx.lineJoin = 'round';
       }
@@ -2114,9 +1989,12 @@
       predCtx.clearRect(0, 0, predCanvas.width, predCanvas.height);
     }
 
-    // ----- Lasso: select, move, and delete vector ink objects -----
-    let lassoPath = [];
-    let lassoSel = null;        // { strokes, x, y, w, h, path, detached }
+    // ----- Lasso: lift a region of ink off the page, drag it, drop it -----
+    // The page is a raster canvas, so a selection is literally a cut-out
+    // bitmap: the chosen region is copied to its own canvas, erased from the
+    // page, and drawn live on the overlay until it's dropped again.
+    let lassoPath = [];         // CSS-px points of the selection outline
+    let lassoSel = null;        // { canvas, x, y, w, h, path }
     let lassoOffset = { x: 0, y: 0 };
     let lassoDragging = false, lassoDragFrom = null, lassoDrawing = false;
 
@@ -2134,55 +2012,39 @@
       }
       return inside;
     }
-    function translateStroke(stroke, dx, dy){
-      return Object.assign({}, stroke, { id:uid('s_'), points:stroke.points.map(p => ({ x:p.x+dx, y:p.y+dy, r:p.r, cum:p.cum })) });
-    }
     function renderLasso(){
       if(!predCtx) return;
       clearPredictive();
       if(predCanvas) predCanvas.style.opacity = '1';
       predCtx.save();
-      if(lassoSel && lassoSel.detached){
-        predCtx.save();
-        predCtx.translate(lassoOffset.x, lassoOffset.y);
-        predCtx.scale(wrap.clientWidth / (note.canvasWidth || wrap.clientWidth), wrap.clientWidth / (note.canvasWidth || wrap.clientWidth));
-        renderVectorStrokes(predCtx, lassoSel.strokes);
-        predCtx.restore();
+      if(lassoSel){
+        predCtx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
       }
-      const outline = lassoSel ? lassoSel.path.map(pt => ({ x:pt.x+lassoOffset.x, y:pt.y+lassoOffset.y })) : lassoPath;
+      const outline = lassoSel ? lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })) : lassoPath;
       if(outline.length > 1){
         predCtx.setLineDash([6, 5]);
         predCtx.lineWidth = 1.5;
         predCtx.strokeStyle = 'rgba(90,160,255,0.95)';
-        pathFor(outline, predCtx); predCtx.stroke();
+        pathFor(outline, predCtx);
+        predCtx.stroke();
       }
       predCtx.restore();
     }
     function lassoDropSelection(){
       if(!lassoSel) return;
-      if(!lassoSel.detached){
-        lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
-        clearPredictive();
-        return;
-      }
-      checkpoint(note.id);
-      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
-      note.strokes = (note.strokes || []).concat(lassoSel.strokes.map(st => translateStroke(st, lassoOffset.x * documentScale, lassoOffset.y * documentScale)));
-      lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
+      ctx.save();
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.drawImage(lassoSel.canvas, lassoSel.x + lassoOffset.x, lassoSel.y + lassoOffset.y, lassoSel.w, lassoSel.h);
+      ctx.restore();
+      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
       clearPredictive();
-      renderSavedVectorInk();
       saveDrawing();
     }
     function lassoDeleteSelection(){
       if(!lassoSel) return;
-      checkpoint(note.id);
-      if(!lassoSel.detached){
-        const selectedIds = new Set(lassoSel.strokes.map(st => st.id));
-        note.strokes = (note.strokes || []).filter(st => !selectedIds.has(st.id));
-      }
-      lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = [];
+      lassoSel = null; lassoOffset = { x: 0, y: 0 }; lassoPath = [];
       clearPredictive();
-      renderSavedVectorInk();
       saveDrawing();
     }
     function lassoLift(){
@@ -2197,15 +2059,23 @@
       const w = Math.min(wrap.clientWidth - x, Math.max(...xs) - x + 4);
       const h = Math.min(cssH - y, Math.max(...ys) - y + 4);
       if(w < 4 || h < 4){ lassoPath = []; clearPredictive(); return; }
-      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
-      const selectionPts = pts.map(pt => ({ x:pt.x * documentScale, y:pt.y * documentScale }));
-      const selected = (note.strokes || []).filter(st => st.points.some(p => pointInPath(selectionPts, p.x, p.y)));
-      if(!selected.length){ lassoPath = []; clearPredictive(); return; }
-      checkpoint(note.id);
-      lassoSel = { strokes:selected.map(normalizeStroke), x, y, w, h, path:pts.map(pt => ({x:pt.x,y:pt.y})), detached:false };
+      const cut = document.createElement('canvas');
+      cut.width = Math.ceil(w * ratio); cut.height = Math.ceil(h * ratio);
+      const cctx = cut.getContext('2d');
+      cctx.scale(ratio, ratio);
+      cctx.translate(-x, -y);
+      pathFor(pts, cctx);
+      cctx.clip();
+      cctx.drawImage(canvas, 0, 0, wrap.clientWidth, cssH);
+      // Erase the lifted region from the page itself.
+      ctx.save();
+      pathFor(pts, ctx);
+      ctx.clip();
+      ctx.clearRect(x, y, w, h);
+      ctx.restore();
+      lassoSel = { canvas: cut, x, y, w, h, path: pts.map(pt => ({ x: pt.x, y: pt.y })) };
       lassoPath = [];
-      lassoOffset = { x:0, y:0 };
-      renderSavedVectorInk();
+      lassoOffset = { x: 0, y: 0 };
       renderLasso();
       saveDrawing();
     }
@@ -2214,18 +2084,11 @@
     // on top of) lives on its own canvas, entirely separate from the ink
     // above it — via a negative z-index so it sits behind the ink canvas
     // but in front of the page's own dot/line background. That separation
-    // matters: erasing or clearing ink never touches it, and vector strokes
-    // stay separate from the imported pages — the two are only composited
-    // together at export time.
+    // matters: erasing or clearing ink never touches it, and note.drawing
+    // (the ink layer's own saved PNG) stays just the ink, nothing baked
+    // in — the two are only composited together at export time.
     const bgCanvas = document.getElementById('drawCanvasBg');
     const bgCtx = bgCanvas ? bgCanvas.getContext('2d') : null;
-    // Page metadata is cheap enough to load with the note; the actual raster
-    // payloads live in separate records and are hydrated only for this editor.
-    hydrateBackgroundPages(note).then((changed) => {
-      if(!changed) return;
-      bgPainted = { w:0, top:0, bottom:0, pages:-1 };
-      renderBgLayer(wrap.clientWidth, cssH);
-    }).catch(err => console.warn('Background hydration failed', err));
 
     // The background layer is VIRTUALISED. A 40-page PDF at ~1400px wide is
     // far too much bitmap to hold in one full-document canvas (iPadOS simply
@@ -2334,7 +2197,7 @@
       const bottom = Math.min(bgDocH, Math.round(scrollTop + viewH + overscan));
       const height = Math.max(1, bottom - top);
 
-      const visible = pages.filter(e => e.page.src && !(e.y + e.h <= top || e.y >= bottom));
+      const visible = pages.filter(e => !(e.y + e.h <= top || e.y >= bottom));
 
       // Decode everything the new window needs BEFORE touching the canvas.
       // Clearing first and filling in as decodes landed is exactly what made
@@ -2410,8 +2273,6 @@
         return;
       }
 
-      newPages = newPages.map(page => Object.assign({}, page, { id: page.id || uid('pg_') }));
-      await storeBackgroundPages(newPages);
       checkpoint();
       note.bgPages = (note.bgPages || []).concat(newPages);
       const neededH = Math.max(cssH, bgContentHeight(cssW), DEFAULT_CANVAS_HEIGHT);
@@ -2449,8 +2310,8 @@
     // canvas, synchronously — used whenever the canvas needs resizing
     // mid-session (growing taller while drawing, or a width resync), so it
     // can be redrawn from exactly what's live right now. That distinction
-    // matters: reloading from the last saved raster would silently drop
-    // anything drawn
+    // matters: reloading from the last *saved* image (note.drawing, like
+    // the initial load above does) would silently drop anything drawn
     // since that save — most importantly the stroke currently in progress,
     // since both of these resizes can happen mid-stroke by design — and
     // doing it via an async Image/data-URL round trip (as opposed to a
@@ -2465,51 +2326,24 @@
     }
     function resizeLiveCanvas(newCssW, newCssH){
       const temp = snapshotLivePixels();
-      const previousWindowTop = inkWindowTop;
-      const previousWindowH = inkWindowH;
-      cssH = newCssH;
-      note.canvasHeight = newCssH;
-      const window = calculateInkWindow(newCssH);
-      inkWindowTop = window.top; inkWindowH = window.height;
       wrap.style.height = newCssH + 'px';
-      canvas.width = Math.max(1, Math.round(newCssW * ratio)); canvas.height = Math.max(1, Math.round(inkWindowH * ratio));
-      canvas.style.height = inkWindowH + 'px'; canvas.style.top = inkWindowTop + 'px';
+      canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
+      canvas.style.height = newCssH + 'px';
       ctx = canvas.getContext('2d');
       ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      // Preserve the old window when possible. If the window moved because of
-      // scrolling, the next vector replay repaints the correct document slice.
-      if(Math.abs(previousWindowTop - inkWindowTop) < 1 && Math.abs(previousWindowH - inkWindowH) < 1){
-        ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, inkWindowH);
-      }
+      ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, newCssH);
       if(predCanvas){
-        predCanvas.width = Math.max(1, Math.round(newCssW * ratio)); predCanvas.height = Math.max(1, Math.round(inkWindowH * ratio));
-        predCanvas.style.height = inkWindowH + 'px'; predCanvas.style.top = inkWindowTop + 'px';
+        predCanvas.width = newCssW * ratio; predCanvas.height = newCssH * ratio;
+        predCanvas.style.height = newCssH + 'px';
         const pctx2 = predCanvas.getContext('2d');
         pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
       }
+      cssH = newCssH;
       lastCssW = newCssW;
+      note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
-      if(Math.abs(previousWindowTop - inkWindowTop) >= 1 || Math.abs(previousWindowH - inkWindowH) >= 1) renderSavedVectorInk();
       renderBgLayer(newCssW, newCssH);
     }
-
-    let inkWindowRaf = 0;
-    function scheduleInkWindow(){
-      if(inkWindowRaf) return;
-      const viewportH = Math.max(1, scrollEl.clientHeight || 700);
-      const scrollTop = scrollEl.scrollTop || 0;
-      const nearTop = scrollTop < inkWindowTop + INK_OVERSCAN * 0.5;
-      const nearBottom = scrollTop + viewportH > inkWindowTop + inkWindowH - INK_OVERSCAN * 0.5;
-      if(!nearTop && !nearBottom) return;
-      inkWindowRaf = requestAnimationFrame(() => {
-        inkWindowRaf = 0;
-        const next = calculateInkWindow(cssH);
-        if(Math.abs(next.top - inkWindowTop) > 8 || Math.abs(next.height - inkWindowH) > 8){
-          resizeLiveCanvas(wrap.clientWidth, cssH);
-        }
-      });
-    }
-    if(scrollEl) scrollEl.addEventListener('scroll', scheduleInkWindow, { passive:true });
 
     // The canvas's internal pixel grid is only recomputed when we
     // explicitly resize it — nothing was re-syncing it if the canvas's
@@ -2538,7 +2372,7 @@
     // Also catch it the instant you touch down to draw — cheaper than a
     // resize listener catching everything (e.g. a PWA's chrome settling a
     // beat after launch) and guarantees the very first stroke is correct.
-    inputLayer.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
+    canvas.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
 
     let growing = false;
     function growIfNear(edgeY){
@@ -2567,8 +2401,8 @@
     // duration of a stroke and invalidated whenever it could actually move.
     let rectCache = null;
     function invalidateRect(){ rectCache = null; }
-    function canvasRect(){ return rectCache || (rectCache = wrap.getBoundingClientRect()); }
-    inputLayer.addEventListener('pointerdown', invalidateRect, { capture: true });
+    function canvasRect(){ return rectCache || (rectCache = canvas.getBoundingClientRect()); }
+    canvas.addEventListener('pointerdown', invalidateRect, { capture: true });
     window.addEventListener('resize', invalidateRect);
     window.addEventListener('orientationchange', invalidateRect);
     if(scrollEl) scrollEl.addEventListener('scroll', invalidateRect, { passive: true });
@@ -2670,6 +2504,103 @@
       return r * (0.18 + 0.82 * t);
     }
 
+    // ---------- vector ink: persist strokes, not a flattened image ----------
+    // A finished stroke is stored as its own small object — tool/color/
+    // width plus the same {x,y,r} points already computed live above — so
+    // saving it is just appending a few dozen numbers to note.strokes,
+    // regardless of how tall the page is. Redrawing later means replaying
+    // those strokes through the exact same stampCircle/stampSegment calls
+    // used while actually drawing, which is why the replayed result is
+    // pixel-identical to what you saw live: it's the same code, just fed
+    // recorded points instead of the pointer. stampCircle/stampSegment/
+    // dashOn read the tool/size/color/dash off drawState and the local
+    // strokeDash — swapping those in for the stroke's own recorded values
+    // for the duration of a replay call reuses that code completely rather
+    // than duplicating the stamping logic here.
+    function replayStroke(targetCtx, stroke){
+      const pts = stroke.points;
+      if(!pts || !pts.length) return;
+      const savedTool = drawState.tool, savedSize = drawState.penSize, savedColor = drawState.color;
+      const savedDash = strokeDash, savedErasing = strokeIsErasing;
+      drawState.tool = stroke.tool; drawState.penSize = stroke.penSize; drawState.color = stroke.color;
+      strokeDash = stroke.dash || 'solid'; strokeIsErasing = false;
+      targetCtx.save();
+      targetCtx.globalCompositeOperation = 'source-over';
+      targetCtx.globalAlpha = stroke.alpha == null ? 1 : stroke.alpha;
+      targetCtx.fillStyle = stroke.color;
+      if(pts.length === 1){
+        stampCircle(targetCtx, pts[0].x, pts[0].y, pts[0].r);
+      } else {
+        let cum = 0;
+        for(let i = 1; i < pts.length; i++){
+          const a = pts[i - 1], b = pts[i];
+          stampSegment(targetCtx, a.x, a.y, a.r, b.x, b.y, b.r, strokeDash !== 'solid' ? cum : null);
+          cum += Math.hypot(b.x - a.x, b.y - a.y);
+        }
+      }
+      targetCtx.restore();
+      drawState.tool = savedTool; drawState.penSize = savedSize; drawState.color = savedColor;
+      strokeDash = savedDash; strokeIsErasing = savedErasing;
+    }
+    function replayAllStrokes(targetCtx, strokes){
+      (strokes || []).forEach(s => replayStroke(targetCtx, s));
+    }
+    // Object-level erasing: rather than punching a hole in a flattened
+    // image, find which stored strokes the eraser path actually touched
+    // and rebuild just those as one or more shorter strokes (splitting
+    // around the erased points), leaving every untouched stroke as-is by
+    // reference. Runs once per eraser lift, not per frame — the live
+    // raster feedback while erasing is unchanged (see the pointermove
+    // handler below), this only needs to keep the persisted vector data
+    // in sync with what you just saw happen on screen.
+    function eraseStrokesAlong(note, eraserPts){
+      if(!eraserPts.length || !note.strokes || !note.strokes.length) return;
+      // Cap how many eraser samples we test against — a long, slow erase
+      // drag can record hundreds of samples, and consecutive samples a
+      // couple pixels apart add nothing a coarser sampling wouldn't also
+      // catch, given the eraser itself has real width.
+      let samples = eraserPts;
+      if(samples.length > 150){
+        const step = samples.length / 150;
+        const thinned = [];
+        for(let i = 0; i < 150; i++) thinned.push(samples[Math.floor(i * step)]);
+        samples = thinned;
+      }
+      const hitTest = (x, y, strokeR) => {
+        for(let i = 0; i < samples.length; i++){
+          const ep = samples[i];
+          const rr = ep.r + strokeR;
+          const dx = x - ep.x, dy = y - ep.y;
+          if(dx * dx + dy * dy <= rr * rr) return true;
+        }
+        return false;
+      };
+      let changed = false;
+      const nextStrokes = [];
+      for(const s of note.strokes){
+        const pts = s.points;
+        if(!pts || !pts.length){ nextStrokes.push(s); continue; }
+        const hits = pts.map(p => hitTest(p.x, p.y, p.r));
+        if(!hits.some(Boolean)){ nextStrokes.push(s); continue; }
+        changed = true;
+        let run = [];
+        for(let i = 0; i < pts.length; i++){
+          if(!hits[i]){ run.push(pts[i]); }
+          else { if(run.length > 1) nextStrokes.push({ ...s, points: run }); run = []; }
+        }
+        if(run.length > 1) nextStrokes.push({ ...s, points: run });
+      }
+      if(changed) note.strokes = nextStrokes;
+    }
+    // The lightweight replacement for the old saveDrawing()'s async-encode
+    // path: a stroke is already just a small object by the time this runs,
+    // so persisting it is the same cheap commitMutation() any other note
+    // edit uses — no canvas encode, so no async gap to guard against.
+    function commitInkChange(){
+      note.updatedAt = Date.now();
+      commitMutation();
+    }
+
     // strokePts holds every real (post-jitter-smoothing) point of the
     // in-progress pen stroke: {x, y, r, cum}. Points older than the tail
     // window get baked permanently onto the real canvas as soon as they're
@@ -2682,6 +2613,10 @@
     let strokePts = [];
     let bakedCount = 0;
     let strokeIsErasing = false;
+    // Every point the eraser has actually passed over during the current
+    // erase gesture (see the pointerdown/pointermove handlers below),
+    // consumed once at lift-off by eraseStrokesAlong().
+    let eraserPathPts = [];
     // A highlighter stroke has to be laid down as ONE translucent layer,
     // otherwise every overlapping stamp along the same stroke would stack up
     // and the line would look blotchy where you moved slowly. So the whole
@@ -2736,7 +2671,7 @@
     function clearTail(){
       if(!predCtx) return;
       if(!tailBox){ clearPredictive(); return; }
-      predCtx.clearRect(tailBox.x0, tailBox.y0 - inkWindowTop, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0);
+      predCtx.clearRect(tailBox.x0, tailBox.y0, tailBox.x1 - tailBox.x0, tailBox.y1 - tailBox.y0);
       tailBox = null;
     }
     function renderLiveTail(extraPt){
@@ -2764,14 +2699,11 @@
         if(p.y + pad > y1) y1 = p.y + pad;
       }
       tailBox = { x0, y0, x1, y1 };
-      predCtx.save();
-      predCtx.translate(0, -inkWindowTop);
       predCtx.globalCompositeOperation = 'source-over';
       predCtx.fillStyle = drawState.color;
       if(all.length === 1){
         const only = all[0];
         stampCircle(predCtx, only.x, only.y, endTaperedRadius(only.r, total - only.cum));
-        predCtx.restore();
         return;
       }
       for(let i = 1; i < all.length; i++){
@@ -2780,7 +2712,6 @@
         const rb = endTaperedRadius(b.r, total - b.cum);
         stampSegment(predCtx, a.x, a.y, ra, b.x, b.y, rb, strokeDash === 'solid' ? null : a.cum);
       }
-      predCtx.restore();
     }
 
     // The tail is re-rendered at most once per animation frame. Pointer
@@ -2810,32 +2741,41 @@
     function showEraserCursor(){ if(eraserCursor && drawState.erasing) eraserCursor.classList.add('show'); }
     function hideEraserCursor(){ if(eraserCursor) eraserCursor.classList.remove('show'); }
 
-    function renderSavedVectorInk(){
-      ctx.save();
-      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      ctx.clearRect(0, 0, canvas.width / ratio, canvas.height / ratio);
-      if(legacyInkImage && legacyInkImage.complete && legacyInkImage.naturalWidth){
-        ctx.drawImage(legacyInkImage, 0, -inkWindowTop, wrap.clientWidth, cssH);
-      }
-      const sourceW = note.canvasWidth || wrap.clientWidth;
-      const scale = wrap.clientWidth / sourceW;
-      ctx.save(); ctx.translate(0, -inkWindowTop); ctx.scale(scale, scale); renderVectorStrokes(ctx, note.strokes || []); ctx.restore();
-      ctx.restore();
-    }
-    function appendCurrentStroke(){
-      if(!strokePts.length) return;
-      const sourceW = note.canvasWidth || wrap.clientWidth;
-      const scale = sourceW / wrap.clientWidth;
-      const points = strokePts.map(p => ({ x:p.x*scale, y:p.y*scale, r:p.r*scale, cum:p.cum*scale }));
-      const stored = normalizeStroke({
-        id:uid('s_'), tool:drawState.tool, color:drawState.color, alpha:strokeAlpha,
-        straight:strokeStraight, dash:strokeDash, penSize:drawState.penSize*scale, points
-      });
-      if(stored) note.strokes = (note.strokes || []).concat(stored);
-    }
+    // Used only by the lasso tool now (drop/delete/lift below) — moving or
+    // deleting a lassoed region is raster work (it cuts and repastes actual
+    // pixels), so the cleanest way to keep that consistent with the vector
+    // strokes layered on top is to flatten everything — old note.drawing,
+    // every replayed stroke, and the lasso edit — into one fresh image and
+    // clear note.strokes, the same way a pre-migration note's ink already
+    // behaves. Plain pen/marker/highlighter/eraser strokes no longer go
+    // through this at all (see commitInkChange() above), which is what
+    // actually fixes the "slow after import" problem: this async-encode
+    // path only ever runs on a deliberate, infrequent lasso edit now, not
+    // on every single stroke.
+    let drawingSaveToken = 0;
     function saveDrawing(){
+      checkpoint(note.id);
       note.updatedAt = Date.now();
-      commitMutation(note.id);
+      notesWithPendingInk.add(note.id);
+      const targetNote = note;
+      const myToken = ++drawingSaveToken;
+      const savePromise = new Promise((resolve) => {
+        canvas.toBlob((blob) => {
+          if(!blob){ resolve(); return; }
+          const reader = new FileReader();
+          reader.onload = () => {
+            if(myToken === drawingSaveToken){ // still the latest edit on this note
+              targetNote.drawing = reader.result;
+              targetNote.strokes = []; // baked into the image above now
+              notesWithPendingInk.delete(targetNote.id);
+              commitMutation();
+            }
+            resolve();
+          };
+          reader.readAsDataURL(blob);
+        }, 'image/png');
+      });
+      pendingDrawingSaves.set(targetNote.id, savePromise);
     }
 
     // Gesture routing: pen/stylus and mouse always draw. A bare finger touch
@@ -2877,42 +2817,7 @@
       return big && (Date.now() - lastPenActivityAt) < PEN_RECENCY_MS;
     }
 
-    function pointSegmentDistance(px, py, ax, ay, bx, by){
-      const dx = bx-ax, dy = by-ay;
-      const len2 = dx*dx + dy*dy;
-      const t = len2 ? Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / len2)) : 0;
-      return Math.hypot(px-(ax+dx*t), py-(ay+dy*t));
-    }
-    function splitStrokeAtEraser(stroke, x, y, radius){
-      const runs = [], run = [];
-      const pts = stroke.points || [];
-      for(let i = 0; i < pts.length; i++){
-        const p = pts[i];
-        const pointHit = Math.hypot(p.x-x, p.y-y) <= radius + p.r;
-        const prev = pts[i-1];
-        const segmentHit = prev && pointSegmentDistance(x, y, prev.x, prev.y, p.x, p.y) <= radius + Math.max(prev.r, p.r);
-        if(pointHit || segmentHit){
-          if(run.length) runs.push(run.splice(0, run.length));
-        } else run.push(p);
-      }
-      if(run.length) runs.push(run.slice());
-      if(runs.length === 1 && runs[0].length === pts.length) return [stroke];
-      return runs.filter(r => r.length).map(points => normalizeStroke(Object.assign({}, stroke, { id:uid('s_'), points })));
-    }
-    function eraseVectorAt(x, y){
-      const before = note.strokes || [];
-      const next = [];
-      const documentScale = (note.canvasWidth || wrap.clientWidth) / wrap.clientWidth;
-      x *= documentScale; y *= documentScale;
-      const radius = (drawState.eraserSize / 2) * documentScale;
-      before.forEach(stroke => next.push(...splitStrokeAtEraser(stroke, x, y, radius)));
-      if(next.length !== before.length || next.some((st, i) => st !== before[i])){
-        note.strokes = next;
-        renderSavedVectorInk();
-      }
-    }
-
-    inputLayer.addEventListener('pointerdown', (e) => {
+    canvas.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       noteRecentPen(e);
 
@@ -2925,6 +2830,14 @@
       if(document.activeElement && document.activeElement !== document.body && typeof document.activeElement.blur === 'function'){
         document.activeElement.blur();
       }
+      // A stray text selection (see the selectstart handler below — this
+      // is the belt to that suspenders) can otherwise survive onto the
+      // canvas: iOS in particular can leave a blue selection handle
+      // sitting over the page, which then looks like it's "selecting"
+      // ink or blank canvas that was never actually selectable text.
+      // Starting a stroke always clears it.
+      const sel = window.getSelection && window.getSelection();
+      if(sel && sel.removeAllRanges) sel.removeAllRanges();
 
       if(looksLikePalm(e)) return;
 
@@ -2948,6 +2861,7 @@
         // Finger touch (in default mode), or a second finger, or Scroll mode
         // explicitly on — abandon any in-progress stroke and scroll instead.
         drawing = false;
+        strokeInProgress = false;
         gestureMode = 'scroll';
         primaryPointerId = null; primaryPointerType = null;
         scrollStartY = avgY();
@@ -2958,11 +2872,9 @@
 
       gestureMode = 'draw';
       drawing = true;
+      strokeInProgress = true;
       primaryPointerId = e.pointerId; primaryPointerType = e.pointerType;
-      // Pointer events are handled by the transparent full-document input
-      // layer. Capture there as well; capturing on the visible canvas would
-      // retarget real stylus move/up events away from these listeners.
-      try { inputLayer.setPointerCapture(e.pointerId); } catch(err) {}
+      try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
       const [x, y] = pos(e);
       lastX = x; lastY = y; smoothX = x; smoothY = y;
       moveEraserCursor(x, y);
@@ -2972,17 +2884,11 @@
         if(lassoSel){
           const inside = pointInPath(lassoSel.path.map(pt => ({ x: pt.x + lassoOffset.x, y: pt.y + lassoOffset.y })), x, y);
           if(inside){
-            checkpoint(note.id);
-            lassoSel.detached = true;
-            note.strokes = (note.strokes || []).filter(st => !lassoSel.strokes.some(sel => sel.id === st.id));
-            renderSavedVectorInk();
             lassoDragging = true; lassoDragFrom = { x, y };
             lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
-            renderLasso();
             return;
           }
-          if(lassoSel.detached) lassoDropSelection();
-          else { lassoSel = null; lassoOffset = { x:0, y:0 }; lassoPath = []; clearPredictive(); }
+          lassoDropSelection();
         }
         lassoDrawing = true;
         lassoPath = [{ x, y }];
@@ -2991,7 +2897,6 @@
       }
 
       strokeIsErasing = drawState.erasing;
-      if(strokeIsErasing) checkpoint(note.id);
       strokeAlpha = currentAlpha();
       strokeStraight = !strokeIsErasing && drawState.tool === 'highlighter' && !!tset().straightLine;
       strokeDash = (!strokeIsErasing && drawState.tool === 'highlighter') ? (tset().dash || 'solid') : 'solid';
@@ -3001,7 +2906,11 @@
       ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
 
       if(strokeIsErasing){
-        eraseVectorAt(x, y);
+        // Eraser stays simple, immediate, and constant-width — painted
+        // straight onto the real canvas as you go. Predictable removal
+        // matters more here than tapered artistry.
+        eraserPathPts = [{ x, y, r: drawState.eraserSize / 2 }];
+        stampCircle(ctx, x, y, drawState.eraserSize / 2);
         return;
       }
 
@@ -3022,7 +2931,7 @@
       stampCircle(ctx, x, y, startR);
     });
 
-    inputLayer.addEventListener('pointermove', (e) => {
+    canvas.addEventListener('pointermove', (e) => {
       noteRecentPen(e);
 
       if(gestureMode === 'draw' && drawing && e.pointerId !== primaryPointerId){
@@ -3076,6 +2985,9 @@
       if(!events.length) events = [e];
 
       if(strokeIsErasing){
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = '#000';
+        const r = drawState.eraserSize / 2;
         events.forEach(ev => {
           let [x, y] = pos(ev);
           if(jitterAlpha){
@@ -3083,8 +2995,9 @@
             smoothY = smoothY + (y - smoothY) * (1 - jitterAlpha);
             x = smoothX; y = smoothY;
           }
-          eraseVectorAt(x, y);
+          stampSegment(ctx, lastX, lastY, r, x, y, r);
           lastX = x; lastY = y;
+          eraserPathPts.push({ x, y, r });
           growIfNear(y);
         });
         moveEraserCursor(lastX, lastY);
@@ -3155,7 +3068,7 @@
         return;
       }
       if(gestureMode === 'draw' && drawing){
-        drawing = false; gestureMode = 'idle';
+        drawing = false; strokeInProgress = false; gestureMode = 'idle';
         primaryPointerId = null; primaryPointerType = null;
         if(lassoActive()){
           if(lassoDragging){
@@ -3168,44 +3081,90 @@
           }
           return;
         }
-        if(strokeIsErasing){
-          strokePts = []; bakedCount = 0;
-          saveDrawing(); growIfNear(lastY);
-          return;
-        }
         if(strokeIsHighlighter){
-          // The live overlay is only a preview. The durable representation is
-          // the same point/radius vector used to render it.
-          appendCurrentStroke();
-          renderSavedVectorInk();
+          // Flatten the whole overlay stroke onto the page in one pass at
+          // highlighter opacity, so overlaps within the stroke stay even.
+          if(predCanvas && strokePts.length){
+            // ctx is always left with ctx.scale(ratio, ratio) applied (set
+            // in sizeCanvasTo/resizeLiveCanvas so every other draw call can
+            // work in plain CSS-pixel coordinates). canvas.width/height are
+            // DEVICE-pixel dimensions (cssW*ratio), though, so passing them
+            // straight to drawImage as the destination size — while that
+            // ratio scale is still active — scaled the flattened highlighter
+            // image by devicePixelRatio a second time. On any HiDPI screen
+            // (ratio > 1, i.e. virtually every phone/tablet) that stretched
+            // and shifted the highlighter mark away from the actual pen
+            // path the moment you lifted the pen. predCanvas is already
+            // pixel-for-pixel aligned with canvas in device pixels, so draw
+            // it 1:1 with the transform reset rather than going through the
+            // CSS-scaled coordinate system at all.
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = strokeAlpha;
+            ctx.drawImage(predCanvas, 0, 0);
+            ctx.restore();
+          }
           strokeIsHighlighter = false;
           setPredictiveOpacity();
           clearPredictive();
+          if(strokePts.length){
+            checkpoint(note.id);
+            // Reassign (not push, which would mutate the very array
+            // checkpoint() just shallow-copied a reference to — see the
+            // note above snapshotNotesExcept) so the undo snapshot and the
+            // live note never end up silently sharing one mutable array.
+            note.strokes = [...(note.strokes || []), {
+              tool: drawState.tool, color: drawState.color, penSize: drawState.penSize,
+              alpha: strokeAlpha, dash: strokeDash,
+              points: strokePts.map(p => ({ x: p.x, y: p.y, r: p.r })),
+            }];
+            commitInkChange();
+          }
           strokePts = []; bakedCount = 0;
-          saveDrawing(); growIfNear(lastY);
+          growIfNear(lastY);
           return;
         }
-        if(!strokeIsErasing && strokePts.length > bakedCount){
-          // Now that we know exactly where the stroke really ends, bake the
-          // remaining live tail with the true lift-off taper applied.
-          const total = strokePts[strokePts.length - 1].cum;
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.fillStyle = drawState.color;
-          for(let i = bakedCount; i < strokePts.length; i++){
-            const a = strokePts[i - 1], b = strokePts[i];
-            const ra = endTaperedRadius(a.r, total - a.cum);
-            const rb = endTaperedRadius(b.r, total - b.cum);
-            stampSegment(ctx, a.x, a.y, ra, b.x, b.y, rb);
+        if(strokeIsErasing){
+          if(eraserPathPts.length){
+            checkpoint(note.id);
+            eraseStrokesAlong(note, eraserPathPts);
+            commitInkChange();
           }
+          eraserPathPts = [];
+          growIfNear(lastY);
+          return;
         }
-        appendCurrentStroke();
-        renderSavedVectorInk();
+        if(strokePts.length){
+          // Now that we know exactly where the stroke really ends, bake the
+          // remaining live tail with the true lift-off taper applied, and
+          // record the SAME final per-point radii into the persisted
+          // stroke so a later replay matches exactly what got baked here.
+          const total = strokePts[strokePts.length - 1].cum;
+          if(strokePts.length > bakedCount){
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = drawState.color;
+            for(let i = bakedCount; i < strokePts.length; i++){
+              const a = strokePts[i - 1], b = strokePts[i];
+              const ra = endTaperedRadius(a.r, total - a.cum);
+              const rb = endTaperedRadius(b.r, total - b.cum);
+              stampSegment(ctx, a.x, a.y, ra, b.x, b.y, rb);
+            }
+          }
+          checkpoint(note.id);
+          note.strokes = [...(note.strokes || []), {
+            tool: drawState.tool, color: drawState.color, penSize: drawState.penSize,
+            alpha: strokeAlpha, dash: strokeDash,
+            points: strokePts.map(p => ({ x: p.x, y: p.y, r: endTaperedRadius(p.r, total - p.cum) })),
+          }];
+          commitInkChange();
+        }
         strokePts = []; bakedCount = 0;
-        saveDrawing(); growIfNear(lastY);
+        growIfNear(lastY);
       }
     }
-    ['pointerup','pointerleave','pointercancel'].forEach(evt => inputLayer.addEventListener(evt, endPointer));
-    inputLayer.addEventListener('contextmenu', (e) => e.preventDefault());
+    ['pointerup','pointerleave','pointercancel'].forEach(evt => canvas.addEventListener(evt, endPointer));
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 
     // grow the page as you scroll toward the bottom too, not just while drawing —
@@ -3232,7 +3191,7 @@
   }
 
   function isBlankNote(note){
-    return !note.title.trim() && !note.body.trim() && !noteHasInk(note) && (!note.tags || note.tags.length === 0);
+    return !note.title.trim() && !note.body.trim() && !note.drawing && (!note.strokes || !note.strokes.length) && !notesWithPendingInk.has(note.id) && (!note.tags || note.tags.length === 0);
   }
   function closeEditor(note){
     if(isBlankNote(note)){
@@ -3559,7 +3518,10 @@
         const hasBg = (note.bgPages || []).length > 0;
         if(!confirm(hasBg ? 'Clear your drawing? The imported page(s) underneath will stay.' : 'Clear this drawing?')) return;
         checkpoint();
-        note.strokes = []; note.legacyInk = null;
+        note.drawing = null;
+        note.strokes = [];
+        notesWithPendingInk.delete(note.id);
+        pendingDrawingSaves.delete(note.id);
         if(hasBg){
           const wrapEl = document.getElementById('canvasWrapEl');
           const cssW = wrapEl ? wrapEl.clientWidth : 0;
@@ -3578,8 +3540,7 @@
   }
 
   // ---------- export ----------
-  async function exportNote(note, kind){
-    if(note && note.mode === 'draw') await hydrateBackgroundPages(note).catch(() => false);
+  function exportNote(note, kind){
     const safeTitle = (note.title || 'untitled').replace(/[^a-z0-9\-_ ]/gi,'').trim().replace(/\s+/g,'-').toLowerCase() || 'untitled';
     if(kind === 'md' || kind === 'txt'){
       const content = kind === 'md' ? `# ${note.title || 'Untitled'}\n\n${note.body || ''}` : `${note.title || 'Untitled'}\n\n${note.body || ''}`;
@@ -3591,18 +3552,21 @@
       });
     } else if(kind === 'pdf'){
       const printArea = document.getElementById('printArea');
-      if(note.mode === 'draw'){
-        compositeDrawingPng(note).then(blob => {
-          if(!blob) return;
-          const url = URL.createObjectURL(blob);
-          printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1><img src="${url}" style="max-width:100%;" />`;
-          window.print();
-          setTimeout(() => URL.revokeObjectURL(url), 60000);
-        });
-      } else {
-        const bodyHtml = `<div style="white-space:pre-wrap; line-height:1.6;">${escapeHtml(note.body || '')}</div>`;
+      const renderPdfBody = (bodyHtml) => {
         printArea.innerHTML = `<h1 style="font-family:Georgia,serif;">${note.icon||''} ${escapeHtml(note.title || 'Untitled')}</h1>${bodyHtml}`;
         window.print();
+      };
+      const hasDrawInk = note.mode === 'draw' && (note.drawing || (note.strokes && note.strokes.length));
+      if(hasDrawInk){
+        // Goes through the same flatten used for PNG export, since the ink
+        // may now live partly or entirely as vector strokes rather than a
+        // single ready-made image (see compositeDrawingPng()).
+        compositeDrawingPng(note).then(blob => {
+          const url = blob ? URL.createObjectURL(blob) : null;
+          renderPdfBody(url ? `<img src="${url}" style="max-width:100%;" />` : '');
+        });
+      } else {
+        renderPdfBody(`<div style="white-space:pre-wrap; line-height:1.6;">${escapeHtml(note.body || '')}</div>`);
       }
     }
   }
@@ -3617,11 +3581,9 @@
       const w = 1000; // export at a fixed reference width; height follows content
       const bgPages = note.bgPages || [];
       const bgH = bgPages.reduce((sum, p) => sum + (p.naturalH / p.naturalW) * w, 0);
-      const sourceW = note.canvasWidth || w;
-      const vectorScale = w / sourceW;
-      const h = Math.max((note.canvasHeight || DEFAULT_CANVAS_HEIGHT) * vectorScale, bgH, 1);
+      const h = Math.max(note.canvasHeight || DEFAULT_CANVAS_HEIGHT, bgH, 1);
       const out = document.createElement('canvas');
-      out.width = w; out.height = Math.ceil(h);
+      out.width = w; out.height = h;
       const octx = out.getContext('2d');
       const bgStyle = getPaper(note).paperColor;
       octx.fillStyle = bgStyle;
@@ -3644,14 +3606,17 @@
           if(img) octx.drawImage(img, 0, y, w, pageH);
           y += pageH;
         }
-        if(note.legacyInk){
-          const inkImg = await loadImg(note.legacyInk);
+        if(note.drawing){
+          const inkImg = await loadImg(note.drawing);
           if(inkImg) octx.drawImage(inkImg, 0, 0, w, h);
         }
-        octx.save();
-        octx.scale(vectorScale, vectorScale);
-        renderVectorStrokes(octx, note.strokes || []);
-        octx.restore();
+        if(note.strokes && note.strokes.length){
+          const scale = w / (note.pageWidth || 800);
+          octx.save();
+          octx.scale(scale, scale);
+          drawStrokesSimple(octx, note.strokes);
+          octx.restore();
+        }
         out.toBlob((blob) => resolve(blob), 'image/png');
       })();
     });
@@ -3661,7 +3626,7 @@
   function createNote(folderId){
     checkpoint();
     const note = {
-      id: uid(), title: '', body: '', mode: 'text', strokes: [], vectorVersion: 2, canvasBg: 'grid', paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' }, canvasHeight: DEFAULT_CANVAS_HEIGHT,
+      id: uid(), title: '', body: '', mode: 'text', drawing: null, strokes: [], canvasBg: 'grid', paper: { template:'grid', paperColor:'#ffffff', lineColor:'#9aa0a6', spacing:5, direction:'Vertical', size:'A4' }, canvasHeight: DEFAULT_CANVAS_HEIGHT,
       icon: ICON_CYCLE[0], tags: [], folderId: folderId || null,
       pinned: false, trashed: false, trashedAt: null,
       createdAt: Date.now(), updatedAt: Date.now(),
@@ -3765,6 +3730,23 @@
     sidebarEl.classList.toggle('hide-mobile', mobileShowingMain && window.innerWidth <= 780);
   }
 
+
+  // Most of the app's chrome already has user-select:none in CSS, but that
+  // doesn't cover everything the browser will try to select on its own —
+  // e.g. iOS turning a slow pen/finger drag over the canvas or an empty
+  // area below the page into a text-selection gesture, which then shows
+  // native selection handles floating over content that was never
+  // actually selectable text. Rather than track down every element, just
+  // cancel selection globally except inside places text selection is
+  // actually meant to work (inputs, textareas, and anything explicitly
+  // marked selectable, like note titles/bodies and card text).
+  document.addEventListener('selectstart', (e) => {
+    const t = e.target;
+    const tag = t && t.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if(t && t.closest && t.closest('[contenteditable="true"], .body-preview, .card-title, .card-date')) return;
+    e.preventDefault();
+  });
 
   (async function init(){
     await loadState();
