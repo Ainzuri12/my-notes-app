@@ -2365,12 +2365,22 @@
     }
     function resizeLiveCanvas(newCssW, newCssH){
       const temp = snapshotLivePixels();
+      // The snapshot represents the canvas at its OLD size. It must be
+      // redrawn back at that same size (not stretched to fill the new,
+      // usually-taller, dimensions) — otherwise every single grow-as-you-
+      // write resize (the core interaction of this app) vertically
+      // stretches all ink drawn so far, warping it a little more every
+      // ~800px of writing. Any newly added canvas space (below on grow,
+      // or to the right on a width resync) is simply left blank; nothing
+      // existing gets distorted to fill it.
+      const oldCssW = canvas.width / ratio;
+      const oldCssH = canvas.height / ratio;
       wrap.style.height = newCssH + 'px';
       canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
       canvas.style.height = newCssH + 'px';
       ctx = canvas.getContext('2d');
       ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, newCssW, newCssH);
+      ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, oldCssW, oldCssH);
       if(predCanvas){
         predCanvas.width = newCssW * ratio; predCanvas.height = newCssH * ratio;
         predCanvas.style.height = newCssH + 'px';
