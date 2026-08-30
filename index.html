@@ -344,7 +344,7 @@
      or palm graze used to highlight this hint / the edited date mid-stroke
      and pop up the selection menu right over what you were writing. */
   .page-wrap.draw-wrap .footer-meta, .page-wrap.draw-wrap .footer-meta *{
-    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; pointer-events:none; }
 
   /* tool settings sheet */
   .ts-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
@@ -3680,7 +3680,16 @@
   document.getElementById('backupBtn').addEventListener('click', backupToFile);
   document.getElementById('restoreBtn').innerHTML = ICONS.upload;
   const restoreFileInput = document.getElementById('restoreFileInput');
-  document.getElementById('restoreBtn').addEventListener('click', () => restoreFileInput.click());
+  document.getElementById('restoreBtn').addEventListener('click', () => {
+    // Match the in-note Import button's approach: reset value first (so
+    // re-picking the same file still fires 'change') and prefer showPicker()
+    // over .click(), which was unreliable on iPad/Safari.
+    restoreFileInput.value = '';
+    if(typeof restoreFileInput.showPicker === 'function'){
+      try { restoreFileInput.showPicker(); return; } catch(err) { /* use click fallback */ }
+    }
+    restoreFileInput.click();
+  });
   restoreFileInput.addEventListener('change', async (e) => {
     const file = e.target.files && e.target.files[0];
     restoreFileInput.value = '';
