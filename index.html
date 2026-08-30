@@ -1933,6 +1933,45 @@
     // down to thumbnail size correctly.
     note.pageWidth = wrap.clientWidth || note.pageWidth || 800;
 
+    // strokePts holds every real (post-jitter-smoothing) point of the
+    // in-progress pen stroke: {x, y, r, cum}. Points older than the tail
+    // window get baked permanently onto the real canvas as soon as they're
+    // safely out of range of the eventual lift-off taper; bakedCount tracks
+    // how many are already committed. Everything from bakedCount onward is
+    // still "live" and redrawn from scratch each frame on the transparent
+    // overlay canvas, so it can still be reshaped right up until the pen
+    // actually lifts — that's what lets the tail taper correctly instead of
+    // permanently baking-in a guess that turns out wrong.
+    //
+    // Declared up here (rather than down near currentAlpha()/dashOn(), where
+    // they conceptually belong) because sizeCanvasTo() below calls
+    // replayAllStrokes() synchronously as soon as it's invoked a few lines
+    // down — which for a note that already has ink reads strokeDash and
+    // strokeIsErasing immediately. As `let` bindings declared later in this
+    // same function scope, that first read landed in their temporal dead
+    // zone and threw ("Cannot access 'strokeDash' before initialization"),
+    // aborting the rest of setupCanvas() — and with it, wirePage() — before
+    // it ever reached the Template sheet's Done/Cancel/color listeners
+    // further down. That's why the sheet looked wired up but every control
+    // in it silently did nothing on any note that already had a stroke.
+    let strokePts = [];
+    let bakedCount = 0;
+    let strokeIsErasing = false;
+    // Every point the eraser has actually passed over during the current
+    // erase gesture (see the pointerdown/pointermove handlers below),
+    // consumed once at lift-off by eraseStrokesAlong().
+    let eraserPathPts = [];
+    // A highlighter stroke has to be laid down as ONE translucent layer,
+    // otherwise every overlapping stamp along the same stroke would stack up
+    // and the line would look blotchy where you moved slowly. So the whole
+    // stroke is painted opaque on the overlay canvas (shown at highlighter
+    // opacity via CSS) and only flattened onto the real page once, at the
+    // chosen alpha, when the pen lifts.
+    let strokeIsHighlighter = false;
+    let strokeAlpha = 1;      // ink opacity from the tool's Concentration
+    let strokeStraight = false; // "Draw in Straight Line" is on for this stroke
+    let strokeDash = 'solid';
+
     function sizeCanvasTo(newCssH, preserveOldCssH){
       const cssW = wrap.clientWidth;
       wrap.style.height = newCssH + 'px';
@@ -2601,32 +2640,6 @@
       commitMutation();
     }
 
-    // strokePts holds every real (post-jitter-smoothing) point of the
-    // in-progress pen stroke: {x, y, r, cum}. Points older than the tail
-    // window get baked permanently onto the real canvas as soon as they're
-    // safely out of range of the eventual lift-off taper; bakedCount tracks
-    // how many are already committed. Everything from bakedCount onward is
-    // still "live" and redrawn from scratch each frame on the transparent
-    // overlay canvas, so it can still be reshaped right up until the pen
-    // actually lifts — that's what lets the tail taper correctly instead of
-    // permanently baking-in a guess that turns out wrong.
-    let strokePts = [];
-    let bakedCount = 0;
-    let strokeIsErasing = false;
-    // Every point the eraser has actually passed over during the current
-    // erase gesture (see the pointerdown/pointermove handlers below),
-    // consumed once at lift-off by eraseStrokesAlong().
-    let eraserPathPts = [];
-    // A highlighter stroke has to be laid down as ONE translucent layer,
-    // otherwise every overlapping stamp along the same stroke would stack up
-    // and the line would look blotchy where you moved slowly. So the whole
-    // stroke is painted opaque on the overlay canvas (shown at highlighter
-    // opacity via CSS) and only flattened onto the real page once, at the
-    // chosen alpha, when the pen lifts.
-    let strokeIsHighlighter = false;
-    let strokeAlpha = 1;      // ink opacity from the tool's Concentration
-    let strokeStraight = false; // "Draw in Straight Line" is on for this stroke
-    let strokeDash = 'solid';
     function currentAlpha(){
       const c = tset().concentration;
       return Math.max(0.05, Math.min(1, (c == null ? 100 : c) / 100));
