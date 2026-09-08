@@ -3223,7 +3223,23 @@
           if(eraserPathPts.length){
             checkpoint(note.id);
             eraseStrokesAlong(note, eraserPathPts);
-            commitInkChange();
+            if(note.drawing){
+              // This note carries a frozen legacy/lasso-flattened raster
+              // layer underneath (note.drawing). The eraser already
+              // punched a real hole through it visually on `ctx` — canvas
+              // pixels don't distinguish "background" from "ink" — but
+              // eraseStrokesAlong() only ever edits note.strokes, so the
+              // persisted copy of that raster layer still has the old ink
+              // baked in. Left alone, the very next re-render (sizeCanvasTo,
+              // e.g. on switching tools) redraws from that stale
+              // note.drawing and the "erased" mark comes right back.
+              // Re-flatten the now-correctly-erased canvas into
+              // note.drawing (same as a lasso edit) so the erase actually
+              // sticks.
+              saveDrawing();
+            } else {
+              commitInkChange();
+            }
           }
           eraserPathPts = [];
           growIfNear(lastY);
