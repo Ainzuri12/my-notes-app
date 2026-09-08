@@ -51,10 +51,20 @@
   button, input, textarea, select{ font-family: inherit; }
   svg{ display:block; }
   input:focus, textarea:focus, button:focus{ outline: none; }
-  button, .sb-item, .folder-row, .note-card, .tab-btn, .card-del, .f-del, .fdot, .icon-btn, .sb-brand, .page-icon{
-    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  /* Nothing in the app is selectable by default — a stylus or finger
+     dragging over ordinary chrome (titles, toolbars, the paper itself)
+     should never trigger the OS's text-selection UI. This used to be
+     applied piecemeal to individual elements (buttons, the canvas, a
+     couple of hint labels), which left gaps — anything not explicitly
+     listed silently fell back to being selectable, and a stray touch
+     there could still pop up a selection highlight over content that was
+     never actually text. Blanket-deny it on everything, then explicitly
+     re-allow it only where selection is genuinely meant to work. */
+  *{ -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-user-drag: none; }
+  input, textarea, [contenteditable="true"], .body-preview, .card-title, .card-date{
+    -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
   }
-  input, textarea, .body-preview, .card-title, .card-date{ -webkit-user-select: text; user-select: text; }
+
 
   .toast{ position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(10px); background: rgba(28,28,30,0.92); backdrop-filter: blur(8px);
     color: var(--text); font-size: 12.5px; font-weight:500; padding: 9px 16px; border-radius: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
@@ -2415,6 +2425,11 @@
       note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
       renderBgLayer(newCssW, newCssH);
+      // A resize (grow-as-you-write, orientation change, width resync) just
+      // reset the predictive canvas, which is where a floating lasso
+      // selection actually lives. Without this it would sit invisible
+      // until the next drag redrew it.
+      if(typeof lassoSel !== 'undefined' && lassoSel) renderLasso();
     }
 
     // The canvas's internal pixel grid is only recomputed when we
@@ -2932,6 +2947,13 @@
           if(inside){
             lassoDragging = true; lassoDragFrom = { x, y };
             lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
+            // clearPredictive() just ran a few lines up (every pointerdown
+            // clears it to start fresh). That wiped the selection's visible
+            // preview — normally fine since a stroke redraws it on the next
+            // pointermove, but a drag that starts with a tap-and-hold (or
+            // barely moves) could sit blank until movement happened. Put it
+            // straight back so it never visibly disappears on touch-down.
+            renderLasso();
             return;
           }
           lassoDropSelection();
@@ -3823,6 +3845,23 @@
   // actually meant to work (inputs, textareas, and anything explicitly
   // marked selectable, like note titles/bodies and card text).
   document.addEventListener('selectstart', (e) => {
+    const t = e.target;
+    const tag = t && t.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if(t && t.closest && t.closest('[contenteditable="true"], .body-preview, .card-title, .card-date')) return;
+    e.preventDefault();
+  });
+  // Same idea for two other routes iOS can end up showing selection-style
+  // UI through: a long-press-drag interpreted as an image/element drag, and
+  // the native "Copy / Look Up" callout menu. Both are already blocked on
+  // the drawing canvas itself; this covers the rest of the app the same way.
+  document.addEventListener('dragstart', (e) => {
+    const t = e.target;
+    const tag = t && t.tagName;
+    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+  });
+  document.addEventListener('contextmenu', (e) => {
     const t = e.target;
     const tag = t && t.tagName;
     if(tag === 'INPUT' || tag === 'TEXTAREA') return;
