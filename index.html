@@ -385,7 +385,7 @@
   .trash-list-row button.danger:hover{ border-color: var(--danger); color: var(--danger); }
   .trash-banner{ background: var(--panel); border-radius:9px; padding: 10px 14px; font-size:12.5px; color: var(--text-secondary); margin-bottom:18px; }
 
-  .menu-pop{ position:absolute; top: 36px; right: 0; background: var(--panel); border:1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px var(--shadow); z-index: 20; min-width: 190px; padding: 6px; display:none; }
+  .menu-pop{ background: var(--panel); border:1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px var(--shadow); z-index: 200; min-width: 190px; padding: 6px; display:none; }
   .menu-pop.show{ display:block; }
   .menu-pop button{ width:100%; text-align:left; background:none; border:none; padding: 8px 9px; font-size:12.5px; color: var(--text); cursor:pointer; border-radius:6px; display:flex; align-items:center; gap:8px; }
   .menu-pop button:hover{ background: var(--hover); }
@@ -639,6 +639,7 @@
 </div>
 
 
+<div class="menu-pop" id="exportMenu" style="position:fixed;"></div>
 <div class="print-area" id="printArea"></div>
 <div class="toast" id="saveToast"><span class="dot"></span><span id="saveToastText">Saved</span></div>
 <div class="update-banner" id="updateBanner">
@@ -1660,17 +1661,7 @@
           </div>
           ${mode==='text' ? `<button class="icon-btn ${previewMode?'active-toggle':''}" id="previewBtn" title="Toggle markdown preview">${previewMode?ICONS.type:ICONS.eye}</button>` : ''}
           <button class="icon-btn ${note.pinned?'active-toggle':''}" id="favBtn" title="${note.pinned?'Remove from favorites':'Add to favorites'}" style="color:${note.pinned?'var(--star)':''}">${ICONS.star(note.pinned)}</button>
-          <div style="position:relative;">
-            <button class="icon-btn" id="exportBtn" title="Export">${ICONS.download}</button>
-            <div class="menu-pop" id="exportMenu">
-              <div class="hint">Export note</div>
-              ${mode === 'draw'
-                ? `<button data-export="png">Image (.png)</button>`
-                : `<button data-export="md">Markdown (.md)</button>
-                   <button data-export="txt">Plain text (.txt)</button>`}
-              <button data-export="pdf">Print / Save as PDF</button>
-            </div>
-          </div>
+          <button class="icon-btn" id="exportBtn" title="Save As…">${ICONS.download}</button>
           <button class="icon-btn" id="deleteBtn" title="Move to trash">${ICONS.trash}</button>
         </div>
       </div>
@@ -1702,10 +1693,10 @@
           : `<textarea class="body-textarea" id="bodyInput" placeholder="Start writing… (markdown: **bold**, *italic*, # heading, - list, &gt; quote)">${escapeHtml(note.body)}</textarea>`)
         }
 
-        <div class="footer-meta">
+        ${mode === 'draw' ? '' : `<div class="footer-meta">
           <span>Edited ${fmtDate(note.updatedAt)}</span>
           <span>${(note.body||'').trim().split(/\s+/).filter(Boolean).length} words</span>
-        </div>
+        </div>`}
       </div></div>
     `;
     mainEl.classList.toggle('show-mobile', mobileShowingMain);
@@ -1928,7 +1919,6 @@
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
       </div>
-      <div class="stylus-hint">The page grows as you write. One finger scrolls; use a stylus (or tap "Finger" in the toolbar) to draw. Import a PDF past paper with Import and annotate straight on top.</div>
     `;
   }
 
@@ -3286,8 +3276,35 @@
 
     const exportBtn = document.getElementById('exportBtn');
     const exportMenu = document.getElementById('exportMenu');
-    exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.toggle('show'); });
+    exportMenu.classList.remove('show');
+    exportMenu.innerHTML = `
+      <div class="hint">Save As…</div>
+      ${mode === 'draw'
+        ? `<button data-export="png">Image (.png)</button>`
+        : `<button data-export="md">Markdown (.md)</button>
+           <button data-export="txt">Plain text (.txt)</button>`}
+      <button data-export="pdf">Print / Save as PDF</button>
+    `;
     exportMenu.querySelectorAll('[data-export]').forEach(b => b.addEventListener('click', () => { exportNote(note, b.dataset.export); exportMenu.classList.remove('show'); }));
+    exportBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const opening = !exportMenu.classList.contains('show');
+      document.querySelectorAll('.menu-pop').forEach(m => m.classList.remove('show'));
+      if(!opening) return;
+      // Position as a true fixed-position overlay anchored under the button,
+      // so it always renders above everything and is never clipped by the
+      // topbar's horizontal scroll container (the old absolute/nested
+      // version could open off-screen from the clipped area, making it
+      // look like nothing happened when tapped).
+      const r = exportBtn.getBoundingClientRect();
+      exportMenu.style.top = `${Math.round(r.bottom + 8)}px`;
+      const menuWidth = 190;
+      let left = Math.round(r.right - menuWidth);
+      left = Math.max(8, Math.min(left, window.innerWidth - menuWidth - 8));
+      exportMenu.style.left = `${left}px`;
+      exportMenu.style.right = 'auto';
+      exportMenu.classList.add('show');
+    });
 
     document.getElementById('deleteBtn').addEventListener('click', () => {
       checkpoint();
