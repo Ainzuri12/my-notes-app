@@ -3387,7 +3387,7 @@
 
     const titleInput = document.getElementById('titleInput');
     titleInput.addEventListener('focus', () => { checkpoint(); setTimeout(() => titleInput.scrollIntoView({block:'center', behavior:'smooth'}), 300); });
-    titleInput.addEventListener('input', (e) => { note.title = e.target.value; note.updatedAt = Date.now(); commitMutation(); renderSidebar(); });
+    titleInput.addEventListener('input', (e) => { note.title = e.target.value; note.updatedAt = Date.now(); commitMutation(); });
 
     const folderPickerBtn = document.getElementById('folderPickerBtn');
     const folderPickerMenu = document.getElementById('folderPickerMenu');
@@ -3672,7 +3672,7 @@
     } else if(!previewMode){
       const bodyInput = document.getElementById('bodyInput');
       bodyInput.addEventListener('focus', () => { checkpoint(); setTimeout(() => bodyInput.scrollIntoView({block:'center', behavior:'smooth'}), 300); });
-      bodyInput.addEventListener('input', (e) => { note.body = e.target.value; note.updatedAt = Date.now(); commitMutation(); renderSidebar(); });
+      bodyInput.addEventListener('input', (e) => { note.body = e.target.value; note.updatedAt = Date.now(); commitMutation(); });
     }
   }
 
