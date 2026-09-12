@@ -51,10 +51,19 @@
   button, input, textarea, select{ font-family: inherit; }
   svg{ display:block; }
   input:focus, textarea:focus, button:focus{ outline: none; }
-  button, .sb-item, .folder-row, .note-card, .tab-btn, .card-del, .f-del, .fdot, .icon-btn, .sb-brand, .page-icon{
-    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  /* Non-selectable is the default everywhere. On iPad, a stray Apple Pencil
+     hover/graze or slow drag can trigger native text selection before our
+     JS selectstart listener ever runs, so any element left off an "opt-out"
+     allowlist was still fair game — this used to be an allowlist of what's
+     NOT selectable, which meant everything else (toolbar labels, tags, menu
+     items, the title placeholder, etc.) was selectable by default. Flipping
+     the default here means the browser itself refuses selection before any
+     JS gets a chance to run, and we opt back IN only where selecting/copying
+     text is actually wanted. */
+  *{ -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  input, textarea, [contenteditable="true"], .body-preview, .card-title, .card-date{
+    -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
   }
-  input, textarea, .body-preview, .card-title, .card-date{ -webkit-user-select: text; user-select: text; }
 
   .toast{ position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(10px); background: rgba(28,28,30,0.92); backdrop-filter: blur(8px);
     color: var(--text); font-size: 12.5px; font-weight:500; padding: 9px 16px; border-radius: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
