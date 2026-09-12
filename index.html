@@ -51,25 +51,10 @@
   button, input, textarea, select{ font-family: inherit; }
   svg{ display:block; }
   input:focus, textarea:focus, button:focus{ outline: none; }
-  /* Nothing in the app is selectable by default — a stylus or finger
-     dragging over ordinary chrome (titles, toolbars, the paper itself)
-     should never trigger the OS's text-selection UI. This used to be
-     applied piecemeal to individual elements (buttons, the canvas, a
-     couple of hint labels), which left gaps — anything not explicitly
-     listed silently fell back to being selectable, and a stray touch
-     there could still pop up a selection highlight over content that was
-     never actually text. Blanket-deny it on everything, then explicitly
-     re-allow it only where selection is genuinely meant to work.
-     Note: -webkit-user-drag is deliberately NOT included here — WebKit
-     ties native drag-gesture handling for controls like <input type=range>
-     (the eraser/marker/highlighter size sliders) to that property, and
-     disabling it globally stopped their thumbs from responding to touch. */
-  *{ -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  input, textarea, [contenteditable="true"], .body-preview, .card-title, .card-date{
-    -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
+  button, .sb-item, .folder-row, .note-card, .tab-btn, .card-del, .f-del, .fdot, .icon-btn, .sb-brand, .page-icon{
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
   }
-  input[type="range"]{ touch-action: manipulation; }
-
+  input, textarea, .body-preview, .card-title, .card-date{ -webkit-user-select: text; user-select: text; }
 
   .toast{ position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(10px); background: rgba(28,28,30,0.92); backdrop-filter: blur(8px);
     color: var(--text); font-size: 12.5px; font-weight:500; padding: 9px 16px; border-radius: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
@@ -400,7 +385,7 @@
   .trash-list-row button.danger:hover{ border-color: var(--danger); color: var(--danger); }
   .trash-banner{ background: var(--panel); border-radius:9px; padding: 10px 14px; font-size:12.5px; color: var(--text-secondary); margin-bottom:18px; }
 
-  .menu-pop{ background: var(--panel); border:1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px var(--shadow); z-index: 200; min-width: 190px; padding: 6px; display:none; }
+  .menu-pop{ position:absolute; top: 36px; right: 0; background: var(--panel); border:1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 30px var(--shadow); z-index: 20; min-width: 190px; padding: 6px; display:none; }
   .menu-pop.show{ display:block; }
   .menu-pop button{ width:100%; text-align:left; background:none; border:none; padding: 8px 9px; font-size:12.5px; color: var(--text); cursor:pointer; border-radius:6px; display:flex; align-items:center; gap:8px; }
   .menu-pop button:hover{ background: var(--hover); }
@@ -654,7 +639,6 @@
 </div>
 
 
-<div class="menu-pop" id="exportMenu" style="position:fixed;"></div>
 <div class="print-area" id="printArea"></div>
 <div class="toast" id="saveToast"><span class="dot"></span><span id="saveToastText">Saved</span></div>
 <div class="update-banner" id="updateBanner">
@@ -1676,7 +1660,17 @@
           </div>
           ${mode==='text' ? `<button class="icon-btn ${previewMode?'active-toggle':''}" id="previewBtn" title="Toggle markdown preview">${previewMode?ICONS.type:ICONS.eye}</button>` : ''}
           <button class="icon-btn ${note.pinned?'active-toggle':''}" id="favBtn" title="${note.pinned?'Remove from favorites':'Add to favorites'}" style="color:${note.pinned?'var(--star)':''}">${ICONS.star(note.pinned)}</button>
-          <button class="icon-btn" id="exportBtn" title="Save As…">${ICONS.download}</button>
+          <div style="position:relative;">
+            <button class="icon-btn" id="exportBtn" title="Export">${ICONS.download}</button>
+            <div class="menu-pop" id="exportMenu">
+              <div class="hint">Export note</div>
+              ${mode === 'draw'
+                ? `<button data-export="png">Image (.png)</button>`
+                : `<button data-export="md">Markdown (.md)</button>
+                   <button data-export="txt">Plain text (.txt)</button>`}
+              <button data-export="pdf">Print / Save as PDF</button>
+            </div>
+          </div>
           <button class="icon-btn" id="deleteBtn" title="Move to trash">${ICONS.trash}</button>
         </div>
       </div>
@@ -1708,10 +1702,10 @@
           : `<textarea class="body-textarea" id="bodyInput" placeholder="Start writing… (markdown: **bold**, *italic*, # heading, - list, &gt; quote)">${escapeHtml(note.body)}</textarea>`)
         }
 
-        ${mode === 'draw' ? '' : `<div class="footer-meta">
+        <div class="footer-meta">
           <span>Edited ${fmtDate(note.updatedAt)}</span>
           <span>${(note.body||'').trim().split(/\s+/).filter(Boolean).length} words</span>
-        </div>`}
+        </div>
       </div></div>
     `;
     mainEl.classList.toggle('show-mobile', mobileShowingMain);
@@ -1934,6 +1928,7 @@
           <button class="ct-btn" id="clearCanvasBtn" title="Clear page">${ICONS.trash}<span class="ct-label">Clear</span></button>
         </div>
       </div>
+      <div class="stylus-hint">The page grows as you write. One finger scrolls; use a stylus (or tap "Finger" in the toolbar) to draw. Import a PDF past paper with Import and annotate straight on top.</div>
     `;
   }
 
@@ -2101,25 +2096,6 @@
       }
       predCtx.restore();
     }
-    // Belt-and-suspenders on top of the fixes above: rather than continuing
-    // to chase every individual thing that can clear the predictive overlay
-    // out from under a floating selection (a resize, a stray browser
-    // repaint quirk, etc.), just keep it alive on its own. While a
-    // selection is lifted, redraw it every frame — cheap (a clear + one
-    // drawImage + one stroke) and self-stopping the instant lassoSel is
-    // cleared, so it can never sit invisible no matter what else touches
-    // the canvas underneath it.
-    let lassoWatchdogRunning = false;
-    function ensureLassoWatchdog(){
-      if(lassoWatchdogRunning) return;
-      lassoWatchdogRunning = true;
-      const tick = () => {
-        if(!lassoSel){ lassoWatchdogRunning = false; return; }
-        renderLasso();
-        requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
-    }
     function lassoDropSelection(){
       if(!lassoSel) return;
       ctx.save();
@@ -2167,7 +2143,6 @@
       lassoPath = [];
       lassoOffset = { x: 0, y: 0 };
       renderLasso();
-      ensureLassoWatchdog();
       saveDrawing();
     }
 
@@ -2450,11 +2425,6 @@
       note.canvasHeight = newCssH;
       renderPageSeams(wrap, newCssH);
       renderBgLayer(newCssW, newCssH);
-      // A resize (grow-as-you-write, orientation change, width resync) just
-      // reset the predictive canvas, which is where a floating lasso
-      // selection actually lives. Without this it would sit invisible
-      // until the next drag redrew it.
-      if(typeof lassoSel !== 'undefined' && lassoSel) renderLasso();
     }
 
     // The canvas's internal pixel grid is only recomputed when we
@@ -2487,10 +2457,14 @@
     canvas.addEventListener('pointerdown', resyncWidthIfChanged, { capture: true });
 
     let growing = false;
+    // Set right before a mid-stroke resize, so endPointer() can tell a
+    // resize-triggered pointercancel apart from a genuine lift-off.
+    let lastMidStrokeResizeAt = 0;
     function growIfNear(edgeY){
       if(growing) return;
       if(cssH - edgeY < GROW_MARGIN){
         growing = true;
+        const strokePointerId = (gestureMode === 'draw' && drawing) ? primaryPointerId : null;
         resizeLiveCanvas(wrap.clientWidth, cssH + GROW_STEP);
         // resizeLiveCanvas() recreates the 2D context (canvas.width
         // reassignment resets it), which silently resets fillStyle/
@@ -2500,6 +2474,21 @@
         // the rest of the current batch of points.
         ctx.globalCompositeOperation = strokeIsErasing ? 'destination-out' : 'source-over';
         ctx.fillStyle = strokeIsErasing ? '#000' : drawState.color;
+        // Reassigning canvas.width/height while a stylus stroke is
+        // actively holding pointer capture is exactly the kind of thing
+        // that makes some browsers (iPad Safari in particular) silently
+        // drop that capture, or fire a pointercancel, even though the pen
+        // never actually left the screen. Since this happens automatically
+        // every time a stroke crosses a page-grow boundary — i.e. all the
+        // time while writing continuously — that was turning into "the
+        // page loses my stroke every so often, for no reason I can see."
+        // Re-claim capture defensively right away, and flag the moment so
+        // endPointer can recognize and ignore a cancel that's really just
+        // this resize, instead of ending the stroke.
+        if(strokePointerId !== null){
+          lastMidStrokeResizeAt = Date.now();
+          try { canvas.setPointerCapture(strokePointerId); } catch(err) {}
+        }
         commitMutation();
         setTimeout(() => { growing = false; }, 30);
       }
@@ -2869,7 +2858,7 @@
     // finger just to scroll), unless "Draw with finger" is toggled on, in
     // which case a single finger draws instead and two fingers scroll.
     let activePointers = new Map(); // pointerId -> {x, y}
-    let gestureMode = 'idle'; // 'draw' | 'scroll' | 'idle'
+    let gestureMode = 'idle'; // 'draw' | 'touch-pending' | 'scroll' | 'idle'
     let scrollStartY = 0, scrollStartTop = 0;
     // The pointer that actually owns the current draw stroke, if any. Once
     // set, any *other* pointer touching down or moving (a resting palm, the
@@ -2878,6 +2867,10 @@
     // "scroll" mid-stroke — which is what silently truncated/dropped
     // strokes whenever a palm grazed the screen while writing.
     let primaryPointerId = null, primaryPointerType = null;
+    // A touch that lands but hasn't moved far enough yet to be treated as
+    // a deliberate scroll (see the 'touch-pending' state below).
+    let pendingScrollId = null, pendingScrollStartX = 0, pendingScrollStartY = 0;
+    const SCROLL_CONFIRM_PX = 8;
 
     function avgY(){
       const pts = Array.from(activePointers.values());
@@ -2945,13 +2938,21 @@
 
       if(shouldScroll){
         // Finger touch (in default mode), or a second finger, or Scroll mode
-        // explicitly on — abandon any in-progress stroke and scroll instead.
+        // explicitly on. Don't commit to actually scrolling the instant
+        // this touch lands, though — a palm settling back onto the glass
+        // between pen strokes (completely normal while your hand slides
+        // down the page as you write) shows up as a touchdown too, and if
+        // it happened to yank the page the moment it landed, that scroll
+        // jump is exactly what made writing with your hand down feel like
+        // fighting the app. Wait for real movement (see pointermove) before
+        // treating it as an intentional scroll; a merely-resting touch
+        // never accumulates enough movement to cross that threshold.
         drawing = false;
         strokeInProgress = false;
-        gestureMode = 'scroll';
+        gestureMode = 'touch-pending';
         primaryPointerId = null; primaryPointerType = null;
-        scrollStartY = avgY();
-        scrollStartTop = scrollEl.scrollTop;
+        pendingScrollId = e.pointerId;
+        pendingScrollStartX = e.clientX; pendingScrollStartY = e.clientY;
         hideEraserCursor();
         return;
       }
@@ -2972,14 +2973,6 @@
           if(inside){
             lassoDragging = true; lassoDragFrom = { x, y };
             lassoOffset = { x: lassoOffset.x, y: lassoOffset.y, baseX: lassoOffset.x, baseY: lassoOffset.y };
-            // clearPredictive() just ran a few lines up (every pointerdown
-            // clears it to start fresh). That wiped the selection's visible
-            // preview — normally fine since a stroke redraws it on the next
-            // pointermove, but a drag that starts with a tap-and-hold (or
-            // barely moves) could sit blank until movement happened. Put it
-            // straight back so it never visibly disappears on touch-down.
-            renderLasso();
-            ensureLassoWatchdog();
             return;
           }
           lassoDropSelection();
@@ -3036,6 +3029,18 @@
       }
 
       if(activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if(gestureMode === 'touch-pending'){
+        if(e.pointerId !== pendingScrollId) return;
+        const dx = e.clientX - pendingScrollStartX, dy = e.clientY - pendingScrollStartY;
+        if(Math.hypot(dx, dy) < SCROLL_CONFIRM_PX) return; // still could just be a settling palm
+        // Real movement — this is a deliberate scroll after all. Start
+        // tracking from right here so there's no jump back to the
+        // original touchdown point.
+        gestureMode = 'scroll';
+        scrollStartY = avgY();
+        scrollStartTop = scrollEl.scrollTop;
+      }
 
       if(gestureMode === 'scroll'){
         const delta = scrollStartY - avgY();
@@ -3147,6 +3152,16 @@
         // it either. Just let the real drawing pointer keep going.
         return;
       }
+      // A pointercancel arriving right after growIfNear() resized the
+      // canvas mid-stroke (see there) is virtually always the browser
+      // reacting to that resize, not the stylus actually lifting. Ignore
+      // it and keep writing — the next real move/up event will behave
+      // normally either way.
+      if(e.type === 'pointercancel' && gestureMode === 'draw' && drawing &&
+         e.pointerId === primaryPointerId && (Date.now() - lastMidStrokeResizeAt) < 500){
+        try { canvas.setPointerCapture(e.pointerId); } catch(err) {}
+        return;
+      }
       activePointers.delete(e.pointerId);
       hideEraserCursor();
       const keepLive = gestureMode === 'draw' && drawing && (strokeIsHighlighter || lassoActive());
@@ -3157,6 +3172,11 @@
       }
       if(!keepLive) clearPredictive();
 
+      if(gestureMode === 'touch-pending'){
+        if(e.pointerId === pendingScrollId) pendingScrollId = null;
+        if(activePointers.size === 0) gestureMode = 'idle';
+        return;
+      }
       if(gestureMode === 'scroll'){
         if(activePointers.size === 0) gestureMode = 'idle';
         return;
@@ -3223,23 +3243,7 @@
           if(eraserPathPts.length){
             checkpoint(note.id);
             eraseStrokesAlong(note, eraserPathPts);
-            if(note.drawing){
-              // This note carries a frozen legacy/lasso-flattened raster
-              // layer underneath (note.drawing). The eraser already
-              // punched a real hole through it visually on `ctx` — canvas
-              // pixels don't distinguish "background" from "ink" — but
-              // eraseStrokesAlong() only ever edits note.strokes, so the
-              // persisted copy of that raster layer still has the old ink
-              // baked in. Left alone, the very next re-render (sizeCanvasTo,
-              // e.g. on switching tools) redraws from that stale
-              // note.drawing and the "erased" mark comes right back.
-              // Re-flatten the now-correctly-erased canvas into
-              // note.drawing (same as a lasso edit) so the erase actually
-              // sticks.
-              saveDrawing();
-            } else {
-              commitInkChange();
-            }
+            commitInkChange();
           }
           eraserPathPts = [];
           growIfNear(lastY);
@@ -3340,35 +3344,8 @@
 
     const exportBtn = document.getElementById('exportBtn');
     const exportMenu = document.getElementById('exportMenu');
-    exportMenu.classList.remove('show');
-    exportMenu.innerHTML = `
-      <div class="hint">Save As…</div>
-      ${mode === 'draw'
-        ? `<button data-export="png">Image (.png)</button>`
-        : `<button data-export="md">Markdown (.md)</button>
-           <button data-export="txt">Plain text (.txt)</button>`}
-      <button data-export="pdf">Print / Save as PDF</button>
-    `;
+    exportBtn.addEventListener('click', (e) => { e.stopPropagation(); exportMenu.classList.toggle('show'); });
     exportMenu.querySelectorAll('[data-export]').forEach(b => b.addEventListener('click', () => { exportNote(note, b.dataset.export); exportMenu.classList.remove('show'); }));
-    exportBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const opening = !exportMenu.classList.contains('show');
-      document.querySelectorAll('.menu-pop').forEach(m => m.classList.remove('show'));
-      if(!opening) return;
-      // Position as a true fixed-position overlay anchored under the button,
-      // so it always renders above everything and is never clipped by the
-      // topbar's horizontal scroll container (the old absolute/nested
-      // version could open off-screen from the clipped area, making it
-      // look like nothing happened when tapped).
-      const r = exportBtn.getBoundingClientRect();
-      exportMenu.style.top = `${Math.round(r.bottom + 8)}px`;
-      const menuWidth = 190;
-      let left = Math.round(r.right - menuWidth);
-      left = Math.max(8, Math.min(left, window.innerWidth - menuWidth - 8));
-      exportMenu.style.left = `${left}px`;
-      exportMenu.style.right = 'auto';
-      exportMenu.classList.add('show');
-    });
 
     document.getElementById('deleteBtn').addEventListener('click', () => {
       checkpoint();
@@ -3387,7 +3364,7 @@
 
     const titleInput = document.getElementById('titleInput');
     titleInput.addEventListener('focus', () => { checkpoint(); setTimeout(() => titleInput.scrollIntoView({block:'center', behavior:'smooth'}), 300); });
-    titleInput.addEventListener('input', (e) => { note.title = e.target.value; note.updatedAt = Date.now(); commitMutation(); });
+    titleInput.addEventListener('input', (e) => { note.title = e.target.value; note.updatedAt = Date.now(); commitMutation(); renderSidebar(); });
 
     const folderPickerBtn = document.getElementById('folderPickerBtn');
     const folderPickerMenu = document.getElementById('folderPickerMenu');
@@ -3672,7 +3649,7 @@
     } else if(!previewMode){
       const bodyInput = document.getElementById('bodyInput');
       bodyInput.addEventListener('focus', () => { checkpoint(); setTimeout(() => bodyInput.scrollIntoView({block:'center', behavior:'smooth'}), 300); });
-      bodyInput.addEventListener('input', (e) => { note.body = e.target.value; note.updatedAt = Date.now(); commitMutation(); });
+      bodyInput.addEventListener('input', (e) => { note.body = e.target.value; note.updatedAt = Date.now(); commitMutation(); renderSidebar(); });
     }
   }
 
@@ -3887,23 +3864,6 @@
   // actually meant to work (inputs, textareas, and anything explicitly
   // marked selectable, like note titles/bodies and card text).
   document.addEventListener('selectstart', (e) => {
-    const t = e.target;
-    const tag = t && t.tagName;
-    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
-    if(t && t.closest && t.closest('[contenteditable="true"], .body-preview, .card-title, .card-date')) return;
-    e.preventDefault();
-  });
-  // Same idea for two other routes iOS can end up showing selection-style
-  // UI through: a long-press-drag interpreted as an image/element drag, and
-  // the native "Copy / Look Up" callout menu. Both are already blocked on
-  // the drawing canvas itself; this covers the rest of the app the same way.
-  document.addEventListener('dragstart', (e) => {
-    const t = e.target;
-    const tag = t && t.tagName;
-    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
-    e.preventDefault();
-  });
-  document.addEventListener('contextmenu', (e) => {
     const t = e.target;
     const tag = t && t.tagName;
     if(tag === 'INPUT' || tag === 'TEXTAREA') return;
