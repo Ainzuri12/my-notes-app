@@ -268,7 +268,7 @@
   /* draw mode */
   .canvas-shell{ position:relative; border-radius:16px; overflow:hidden; box-shadow: 0 4px 20px var(--shadow); height: min(72vh, 920px); min-height: 440px; }
   .canvas-scroll{ position:absolute; inset:0; overflow-y:auto; overflow-x:hidden; -webkit-overflow-scrolling:touch; overscroll-behavior:contain; }
-  .canvas-wrap{ position:relative; width:100%; background-size: 22px 22px; }
+  .canvas-wrap{ position:relative; width:100%; background-size: 22px 22px; overflow:hidden; }
   .canvas-wrap[data-bg="dark-dot"]{ background-color:#1c1c1e; background-image: radial-gradient(circle, rgba(255,255,255,0.22) 1.2px, transparent 1.6px); }
   .canvas-wrap[data-bg="light-dot"]{ background-color:#ffffff; background-image: radial-gradient(circle, rgba(0,0,0,0.16) 1.2px, transparent 1.6px); }
   .canvas-wrap[data-bg="black"]{ background-color:#000000; background-image:none; }
@@ -279,7 +279,7 @@
      behind the wrapper's opaque paper colour (the wrapper isn't a stacking
      context, so -1 escaped up to an ancestor) — imports silently never showed.
      Explicit 0/1/2 with the ink canvas positioned keeps the order honest. */
-  #drawCanvas{ width:100%; display:block; cursor: crosshair; touch-action: none; position:relative; z-index:1;
+  #drawCanvas{ position:absolute; top:0; left:0; width:100%; display:block; cursor: crosshair; touch-action: none; z-index:1;
     -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
   #drawCanvasPredictive{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:2; }
   #drawCanvasBg{ position:absolute; top:0; left:0; width:100%; display:block; pointer-events:none; z-index:0; }
@@ -2053,6 +2053,10 @@
     }
 
     let ctx = sizeCanvasTo(cssH, cssH);
+    // The ink canvas's *actual* allocated backing-store size, which can be
+    // taller than what's currently visible (see ensureInkCapacity below).
+    let inkCapacityW = wrap.clientWidth;
+    let inkCapacityH = cssH;
     const predCtx = predCanvas ? predCanvas.getContext('2d') : null;
     function clearPredictive(){
       if(!predCtx) return;
@@ -2394,36 +2398,61 @@
       temp.getContext('2d').drawImage(canvas, 0, 0);
       return temp;
     }
-    function resizeLiveCanvas(newCssW, newCssH){
+    // Reallocates the ink canvas's backing store ONLY when it actually runs
+    // out of room — either the width changed (a real resync) or the
+    // requested height exceeds what's currently allocated. When it does
+    // have to reallocate, it grows capacity by a healthy multiple rather
+    // than exactly what's needed right now, so the next several page-grows
+    // (the constant interaction while writing) are free: no reallocation,
+    // no pixel copy, just revealing more of the already-allocated canvas
+    // as .canvas-wrap's visible height grows (the extra capacity sits
+    // below the fold, invisible, thanks to .canvas-wrap's overflow:hidden).
+    // Without this, every single ~800px grow copied the ENTIRE page drawn
+    // so far, and since a longer note means both more grows AND more to
+    // copy at each one, total cost across a session scaled roughly with
+    // page-length squared — exactly why writing felt like it kept getting
+    // slower the further down the page you went.
+    function ensureInkCapacity(newCssW, newCssH){
+      const widthChanged = Math.abs(newCssW - inkCapacityW) > 0.5;
+      if(!widthChanged && newCssH <= inkCapacityH) return;
+
       const temp = snapshotLivePixels();
       // The snapshot represents the canvas at its OLD size. It must be
       // redrawn back at that same size (not stretched to fill the new,
-      // usually-taller, dimensions) — otherwise every single grow-as-you-
-      // write resize (the core interaction of this app) vertically
-      // stretches all ink drawn so far, warping it a little more every
-      // ~800px of writing. Any newly added canvas space (below on grow,
-      // or to the right on a width resync) is simply left blank; nothing
-      // existing gets distorted to fill it.
-      const oldRatio = ratio; // whatever ratio the CURRENT backing store was built at
+      // usually-taller, dimensions) — otherwise every resize vertically
+      // stretches all ink drawn so far, warping it a little more each time.
+      // Any newly added canvas space is simply left blank.
+      const oldRatio = ratio;
       const oldCssW = canvas.width / oldRatio;
       const oldCssH = canvas.height / oldRatio;
-      // Recompute the safe ratio for the NEW size — as a note grows tall
-      // enough via repeated grows (not just a big import), it can cross
-      // the safe-canvas-size threshold mid-session, so this has to be
-      // re-checked on every resize, not just decided once at setup.
-      ratio = safeCanvasRatio(newCssW, newCssH);
-      wrap.style.height = newCssH + 'px';
-      canvas.width = newCssW * ratio; canvas.height = newCssH * ratio;
-      canvas.style.height = newCssH + 'px';
+      // Recompute the safe ratio for the NEW capacity — as a note grows
+      // tall enough via repeated grows (not just a big import), it can
+      // cross the safe-canvas-size threshold mid-session, so this has to
+      // be re-checked on every reallocation, not just decided once at setup.
+      const targetCapH = Math.max(newCssH, Math.ceil(inkCapacityH * 1.6));
+      ratio = safeCanvasRatio(newCssW, targetCapH);
+      canvas.width = newCssW * ratio; canvas.height = targetCapH * ratio;
+      canvas.style.height = targetCapH + 'px';
       ctx = canvas.getContext('2d');
       ctx.scale(ratio, ratio); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       ctx.drawImage(temp, 0, 0, temp.width, temp.height, 0, 0, oldCssW, oldCssH);
+      inkCapacityW = newCssW;
+      inkCapacityH = targetCapH;
+    }
+    function resizeLiveCanvas(newCssW, newCssH){
+      ensureInkCapacity(newCssW, newCssH);
+      // Keep the predictive overlay canvas pixel-for-pixel aligned with the
+      // main canvas (same `ratio`) so a predicted stroke lines up exactly
+      // with the real one. It always tracks the actual visible height —
+      // it holds no persistent ink, gets cleared constantly, and is cheap
+      // to resize every time regardless of page length.
       if(predCanvas){
         predCanvas.width = newCssW * ratio; predCanvas.height = newCssH * ratio;
         predCanvas.style.height = newCssH + 'px';
         const pctx2 = predCanvas.getContext('2d');
         pctx2.scale(ratio, ratio); pctx2.lineCap = 'round'; pctx2.lineJoin = 'round';
       }
+      wrap.style.height = newCssH + 'px';
       cssH = newCssH;
       lastCssW = newCssW;
       note.canvasHeight = newCssH;
