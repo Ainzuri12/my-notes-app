@@ -286,6 +286,12 @@ export default function Home() {
     setLassoPoints([]);
   }, [activeNotebook?.id, activeBoard?.id]);
 
+  useEffect(() => {
+    if (currentView !== "editor") return;
+    const frame = window.requestAnimationFrame(() => renderCanvas(strokesRef.current));
+    return () => window.cancelAnimationFrame(frame);
+  }, [currentView, activePageKey]);
+
   function updatePageText(value: string) {
     if (!activePageKey) return;
     const next = { ...pageText, [activePageKey]: value };
@@ -627,6 +633,16 @@ export default function Home() {
     toast.success("Whiteboard deleted");
   }
 
+  function renameWhiteboard(notebookId: string, boardId: string) {
+    const notebook = notebooks.find((item) => item.id === notebookId);
+    const board = notebook?.boards.find((item) => item.id === boardId);
+    if (!board) return;
+    const title = window.prompt("Rename whiteboard", board.title)?.trim();
+    if (!title || title === board.title) return;
+    setNotebooks((current) => current.map((item) => item.id === notebookId ? { ...item, boards: item.boards.map((entry) => entry.id === boardId ? { ...entry, title, updated: "Edited just now" } : entry), updated: "Edited just now" } : item));
+    toast.success("Whiteboard renamed");
+  }
+
   function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -896,7 +912,7 @@ export default function Home() {
             </div>
           </header>
 
-          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF") || activeNotebook.subtitle.includes("Imported image")} /> : currentView === "editor" ? (
+          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onRenameBoard={(boardId) => renameWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF") || activeNotebook.subtitle.includes("Imported image")} /> : currentView === "editor" ? (
             <div className="editor-view flex min-h-[calc(100vh-74px)] flex-col px-0 pb-0 pt-0" onContextMenu={(event) => event.preventDefault()}>
               <button onClick={() => setCurrentView("notebook")} className="mx-5 mt-4 flex w-fit items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-4 py-2.5 text-sm font-bold text-[#656660] transition hover:border-[#d49483] sm:mx-8 lg:mx-10"><ChevronLeft size={15} /> Back to whiteboards</button>
               <section className="mt-4 flex min-h-[calc(100vh-126px)] flex-1 flex-col overflow-hidden border-y border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
@@ -992,7 +1008,7 @@ export default function Home() {
   );
 }
 
-function NotebookBoardsView({ notebook, onBack, onOpenBoard, onAddBoard, onDeleteBoard, onImport, isPdf }: { notebook: Notebook; onBack: () => void; onOpenBoard: (board: Board) => void; onAddBoard: () => void; onDeleteBoard: (boardId: string) => void; onImport: () => void; isPdf: boolean }) {
+function NotebookBoardsView({ notebook, onBack, onOpenBoard, onAddBoard, onDeleteBoard, onRenameBoard, onImport, isPdf }: { notebook: Notebook; onBack: () => void; onOpenBoard: (board: Board) => void; onAddBoard: () => void; onDeleteBoard: (boardId: string) => void; onRenameBoard: (boardId: string) => void; onImport: () => void; isPdf: boolean }) {
   const palette: Record<string, string> = { coral: "from-[#f4c2b4] via-[#e79783] to-[#ca6e58]", sage: "from-[#c8d8c6] via-[#a7c0a8] to-[#718c7a]", lilac: "from-[#d7c9db] via-[#bca9c9] to-[#8e7697]", navy: "from-[#cad4e3] via-[#8fa4bd] to-[#526d8b]" };
   return (
     <div className="space-y-8 px-5 pb-14 pt-8 sm:px-8 lg:px-10 lg:pt-10">
@@ -1018,7 +1034,7 @@ function NotebookBoardsView({ notebook, onBack, onOpenBoard, onAddBoard, onDelet
         {notebook.boards.length ? (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
             {notebook.boards.map((board) => (
-              <WhiteboardCard key={board.id} board={board} color={notebook.color} onOpen={() => onOpenBoard(board)} onDelete={isPdf ? undefined : () => onDeleteBoard(board.id)} />
+              <WhiteboardCard key={board.id} board={board} color={notebook.color} onOpen={() => onOpenBoard(board)} onRename={() => onRenameBoard(board.id)} onDelete={isPdf ? undefined : () => onDeleteBoard(board.id)} />
             ))}
             {!isPdf && (
               <button onClick={onAddBoard} className="group flex min-h-[210px] flex-col items-center justify-center rounded-[22px] border-2 border-dashed border-[#d6d0c5] bg-[#f7f4ee]/50 p-6 text-center transition hover:border-[#d79284] hover:bg-[#f9f5ef]">
@@ -1044,11 +1060,38 @@ function NotebookBoardsView({ notebook, onBack, onOpenBoard, onAddBoard, onDelet
   );
 }
 
-function WhiteboardCard({ board, color, onOpen, onDelete }: { board: Board; color: string; onOpen: () => void; onDelete?: () => void }) {
+function WhiteboardCard({ board, color, onOpen, onRename, onDelete }: { board: Board; color: string; onOpen: () => void; onRename: () => void; onDelete?: () => void }) {
   const palette: Record<string, string> = { coral: "#e79783", sage: "#a7c0a8", lilac: "#bca9c9", navy: "#8fa4bd" };
+  const [showMenu, setShowMenu] = useState(false);
+  const holdTimerRef = useRef<number | null>(null);
+  const longPressRef = useRef(false);
+
+  function clearHoldTimer() {
+    if (holdTimerRef.current !== null) window.clearTimeout(holdTimerRef.current);
+    holdTimerRef.current = null;
+  }
+
+  function startHold() {
+    clearHoldTimer();
+    holdTimerRef.current = window.setTimeout(() => {
+      longPressRef.current = true;
+      setShowMenu(true);
+      navigator.vibrate?.(10);
+    }, 550);
+  }
+
+  function handleOpen() {
+    clearHoldTimer();
+    if (longPressRef.current) {
+      longPressRef.current = false;
+      return;
+    }
+    onOpen();
+  }
+
   return (
-    <div className="notebook-card group rounded-[22px] border border-[#ded8cd] bg-[#f8f5ef] p-3 shadow-[0_4px_12px_rgba(111,91,68,0.03)] transition duration-200 hover:-translate-y-1">
-      <button onClick={onOpen} className="relative flex h-[172px] w-full flex-col justify-between overflow-hidden rounded-[16px] bg-[#fffdf8] p-4 text-left shadow-inner" style={{ borderTop: `4px solid ${palette[color] ?? palette.navy}` }}>
+    <div className="notebook-card group relative rounded-[22px] border border-[#ded8cd] bg-[#f8f5ef] p-3 shadow-[0_4px_12px_rgba(111,91,68,0.03)] transition duration-200 hover:-translate-y-1">
+      <button onClick={handleOpen} onPointerDown={startHold} onPointerUp={clearHoldTimer} onPointerCancel={clearHoldTimer} onPointerLeave={clearHoldTimer} onContextMenu={(event) => { event.preventDefault(); clearHoldTimer(); setShowMenu(true); }} className="relative flex h-[172px] w-full touch-manipulation flex-col justify-between overflow-hidden rounded-[16px] bg-[#fffdf8] p-4 text-left shadow-inner" style={{ borderTop: `4px solid ${palette[color] ?? palette.navy}` }}>
         <div className="space-y-2.5">
           <div className="h-1.5 w-3/4 rounded-full bg-[#ece5d8]" />
           <div className="h-1.5 w-full rounded-full bg-[#ece5d8]" />
@@ -1061,6 +1104,7 @@ function WhiteboardCard({ board, color, onOpen, onDelete }: { board: Board; colo
         <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-[#383936]">{board.title}</p><p className="mt-1 truncate text-xs text-[#98968e]">{board.updated}</p></div>
         {onDelete && <button onClick={(event) => { event.stopPropagation(); onDelete(); }} className="rounded-lg p-2 text-[#a09e96] opacity-0 transition hover:bg-[#fee9e2] hover:text-[#bf6551] group-hover:opacity-100" aria-label="Delete whiteboard"><Trash2 size={16} /></button>}
       </div>
+      {showMenu && <div className="absolute right-4 top-14 z-30 w-44 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] p-1.5 shadow-[0_14px_30px_rgba(61,51,42,0.18)]" role="menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setShowMenu(false); onRename(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-[#5e5e58] hover:bg-[#f0e8dd]" role="menuitem"><Pencil size={15} /> Rename</button>{onDelete && <button onClick={() => { setShowMenu(false); onDelete(); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm font-semibold text-[#bf6551] hover:bg-[#fee9e2]" role="menuitem"><Trash2 size={15} /> Delete</button>}<button onClick={() => setShowMenu(false)} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-[#9a978f] hover:bg-[#f0e8dd]">Cancel</button></div>}
     </div>
   );
 }
