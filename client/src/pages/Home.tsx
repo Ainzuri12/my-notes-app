@@ -224,6 +224,7 @@ export default function Home() {
   const movingRef = useRef<{ last: Point } | null>(null);
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
+  const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
 
   const activeNotebook = notebooks.find((notebook) => notebook.id === selectedNotebook) ?? notebooks[0];
   const activeBoardIndex = activeNotebook?.boards.findIndex((board) => board.id === activeBoardId) ?? -1;
@@ -341,7 +342,15 @@ export default function Home() {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
-    if (event.pointerType === "touch") return;
+    if (event.pointerType === "touch") {
+      const workspace = event.currentTarget.closest(".paper-workspace") as HTMLElement | null;
+      if (workspace) {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace };
+      }
+      return;
+    }
     if ((event.pointerType === "mouse" && event.button !== 0)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsDrawing(true);
@@ -383,6 +392,15 @@ export default function Home() {
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (event.pointerType === "touch" && touchPanRef.current) {
+      event.preventDefault();
+      const pan = touchPanRef.current;
+      pan.workspace.scrollLeft -= event.clientX - pan.lastX;
+      pan.workspace.scrollTop -= event.clientY - pan.lastY;
+      pan.lastX = event.clientX;
+      pan.lastY = event.clientY;
+      return;
+    }
     if (!isDrawing) return;
     const point = normalizePoint(event);
     if (tool === "lasso") {
@@ -426,6 +444,11 @@ export default function Home() {
   }
 
   function finishStroke(event?: React.PointerEvent<HTMLCanvasElement>) {
+    if (event?.pointerType === "touch") {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      touchPanRef.current = null;
+      return;
+    }
     if (event && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (tool === "lasso" && lassoPoints.length > 2) {
       const selected = strokesRef.current.reduce<number[]>((indexes, stroke, index) => {
