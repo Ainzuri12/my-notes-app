@@ -425,3 +425,7 @@ main:has(.paper-frame) .paper-frame canvas {
     touch-action: pan-y pinch-zoom !important;
   }
 }
+
+
+/* Manual touch pan: native scrolling is disabled on the canvas so pen input never scrolls. */
+main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
