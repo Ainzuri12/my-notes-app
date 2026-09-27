@@ -435,3 +435,24 @@ main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
 main:has(.paper-frame) .paper-frame { height: 6000px !important; min-height: 6000px !important; }
 main:has(.paper-frame) .paper-frame canvas { height: 6000px !important; min-height: 6000px !important; }
 main:has(.paper-frame) .paper-workspace { overflow: auto !important; }
+
+/* Full-screen whiteboard: remove the unused right writing-tools column. */
+main:has(.paper-frame) > .editor-view > section > .grid,
+main:has(.paper-frame) > .space-y-6 > section > .grid {
+  display: block !important;
+}
+main:has(.paper-frame) > .editor-view > section > .grid > aside,
+main:has(.paper-frame) > .space-y-6 > section > .grid > aside {
+  display: none !important;
+}
+main:has(.paper-frame) .paper-workspace {
+  width: 100% !important;
+  min-width: 0 !important;
+  padding: 12px !important;
+}
+main:has(.paper-frame) .paper-frame {
+  width: 100% !important;
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
