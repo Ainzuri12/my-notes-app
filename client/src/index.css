@@ -429,3 +429,9 @@ main:has(.paper-frame) .paper-frame canvas {
 
 /* Manual touch pan: native scrolling is disabled on the canvas so pen input never scrolls. */
 main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
+
+
+/* Continuous Goodnotes-style paper and visible eraser radius. */
+main:has(.paper-frame) .paper-frame { height: 6000px !important; min-height: 6000px !important; }
+main:has(.paper-frame) .paper-frame canvas { height: 6000px !important; min-height: 6000px !important; }
+main:has(.paper-frame) .paper-workspace { overflow: auto !important; }
