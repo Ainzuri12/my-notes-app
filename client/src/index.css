@@ -456,3 +456,20 @@ main:has(.paper-frame) .paper-frame {
   margin-left: 0 !important;
   margin-right: 0 !important;
 }
+
+/* Keep the compact writing toolbar visible as a fixed top strip while its column is removed. */
+main:has(.paper-frame) > .editor-view > section > .grid > aside,
+main:has(.paper-frame) > .space-y-6 > section > .grid > aside {
+  display: flex !important;
+  position: fixed !important;
+  z-index: 35 !important;
+  top: 8px !important;
+  left: 50% !important;
+  right: auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  height: 42px !important;
+  transform: translateX(-50%) !important;
+  align-items: center !important;
+  overflow: hidden !important;
+}
