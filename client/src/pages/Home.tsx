@@ -73,8 +73,10 @@ const CANVAS_HEIGHT = 6000;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
+const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
 
 type DrawingSettings = { selectedColor: string; penSize: number; zoom: number };
+type ImageLayout = { x: number; y: number; scale: number };
 
 function readStored<T>(key: string, fallback: T): T {
   try {
@@ -239,7 +241,10 @@ export default function Home() {
   const [activeImage, setActiveImage] = useState<File | null>(null);
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
   const [imagePageKeys, setImagePageKeys] = useState<Record<string, boolean>>(() => readStored(IMAGE_PAGE_STORAGE_KEY, {}));
+  const [imageLayouts, setImageLayouts] = useState<Record<string, ImageLayout>>(() => readStored(IMAGE_LAYOUT_STORAGE_KEY, {}));
   const [imageScale, setImageScale] = useState(100);
+  const [imagePosition, setImagePosition] = useState({ x: 0, y: 0 });
+  const [imageSelected, setImageSelected] = useState(false);
   const [pageText, setPageText] = useState<Record<string, string>>(getStoredPageText);
   const [lassoPoints, setLassoPoints] = useState<Point[]>([]);
   const [selectedStrokeIndexes, setSelectedStrokeIndexes] = useState<number[]>([]);
@@ -254,6 +259,7 @@ export default function Home() {
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
+  const imageDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startLeft: number; startTop: number; startScale: number; paper: HTMLElement; pointerId: number } | null>(null);
 
   const activeNotebook = notebooks.find((notebook) => notebook.id === selectedNotebook) ?? notebooks[0];
   const activeBoardIndex = activeNotebook?.boards.findIndex((board) => board.id === activeBoardId) ?? -1;
@@ -320,6 +326,16 @@ export default function Home() {
     writeStored(IMAGE_PAGE_STORAGE_KEY, imagePageKeys);
   }, [imagePageKeys]);
   useEffect(() => {
+    writeStored(IMAGE_LAYOUT_STORAGE_KEY, imageLayouts);
+  }, [imageLayouts]);
+  useEffect(() => {
+    if (!activePageKey) return;
+    const layout = imageLayouts[activePageKey] ?? { x: 0, y: 0, scale: 100 };
+    setImagePosition({ x: layout.x, y: layout.y });
+    setImageScale(layout.scale);
+    setImageSelected(false);
+  }, [activePageKey]);
+  useEffect(() => {
     writeStored(SETTINGS_STORAGE_KEY, { selectedColor, penSize, zoom } satisfies DrawingSettings);
   }, [selectedColor, penSize, zoom]);
   useEffect(() => {
@@ -354,11 +370,51 @@ export default function Home() {
       setActiveImageUrl(null);
       return;
     }
-    setImageScale(100);
     const url = URL.createObjectURL(activeImage);
     setActiveImageUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [activeImage]);
+
+  function updateImageLayout(next: Partial<ImageLayout>) {
+    if (!activePageKey) return;
+    const current = imageLayouts[activePageKey] ?? { x: 0, y: 0, scale: 100 };
+    const layout = { ...current, ...next };
+    setImageLayouts((layouts) => ({ ...layouts, [activePageKey]: layout }));
+    setImagePosition({ x: layout.x, y: layout.y });
+    setImageScale(layout.scale);
+  }
+
+  function beginImageInteraction(event: React.PointerEvent<HTMLDivElement>, mode: "move" | "resize") {
+    if (tool !== "select" || !activeImageUrl) return;
+    const paper = event.currentTarget.closest(".paper-frame") as HTMLElement | null;
+    if (!paper) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imageDragRef.current = { mode, startX: event.clientX, startY: event.clientY, startLeft: imagePosition.x, startTop: imagePosition.y, startScale: imageScale, paper, pointerId: event.pointerId };
+    setImageSelected(true);
+  }
+
+  function moveImageInteraction(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = imageDragRef.current;
+    if (!drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = drag.paper.getBoundingClientRect();
+    const dx = ((event.clientX - drag.startX) / bounds.width) * 100;
+    const dy = ((event.clientY - drag.startY) / bounds.height) * 100;
+    if (drag.mode === "resize") {
+      updateImageLayout({ scale: Math.min(300, Math.max(20, drag.startScale + dx)) });
+    } else {
+      updateImageLayout({ x: Math.min(100, Math.max(-100, drag.startLeft + dx)), y: Math.min(100, Math.max(-100, drag.startTop + dy)) });
+    }
+  }
+
+  function endImageInteraction(event?: React.PointerEvent<HTMLDivElement>) {
+    const drag = imageDragRef.current;
+    if (drag && event && event.currentTarget.hasPointerCapture(drag.pointerId)) event.currentTarget.releasePointerCapture(drag.pointerId);
+    imageDragRef.current = null;
+  }
 
   function renderCanvas(nextStrokes = strokesRef.current) {
     const canvas = canvasRef.current;
@@ -946,7 +1002,7 @@ export default function Home() {
                       <ToolButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={() => setZoom((value) => Math.max(75, value - 10))} />
                       <span className="min-w-[39px] text-center text-xs font-bold text-[#6e6c67]">{zoom}%</span>
                       <ToolButton icon={<ZoomIn size={16} />} label="Zoom in" onClick={() => setZoom((value) => Math.min(130, value + 10))} />
-                      {activeImage && <label className="ml-1 flex items-center gap-1.5 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]" title="Resize imported image"><ImageIcon size={14} /><input type="range" min="25" max="200" step="5" value={imageScale} onChange={(event) => setImageScale(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Imported image size" /><output>{imageScale}%</output></label>}
+                      {activeImage && <label className="ml-1 flex items-center gap-1.5 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]" title="Resize imported image"><ImageIcon size={14} /><input type="range" min="20" max="300" step="5" value={imageScale} onChange={(event) => updateImageLayout({ scale: Number(event.target.value) })} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Imported image size" /><output>{imageScale}%</output></label>}
                     </div>
                     {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => setNotebooks((current) => current.map((notebook) => {
                       if (notebook.id !== activeNotebook?.id) return notebook;
@@ -956,12 +1012,15 @@ export default function Home() {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
                     }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden bg-white shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
-                      {activeImageUrl && <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="pointer-events-none absolute inset-x-0 top-0 z-10 h-auto max-h-none w-full origin-top object-contain object-top" style={{ transform: `scale(${imageScale / 100})` }} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />}
+                      {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
+                        <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
+                        {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
+                      </div>}
 {activeBoard?.id === "bio-cellular-respiration" ? <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]">
                         <div className="mb-8 flex items-start justify-between"><div><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#bf6958]">Biology · Unit 04</p><h3 className="font-display text-[clamp(20px,3vw,34px)] leading-none text-[#25344f]">Cellular respiration</h3><p className="mt-3 text-[11px] font-semibold text-[#7a8494]">Tuesday 24 September · Lecture 06</p></div><div className="rounded-lg border border-[#e2b8ab] bg-[#fdf5ed] px-2 py-1 text-[10px] font-bold text-[#c46c5a]">4 / 38</div></div>
                         <div className="space-y-5 text-[clamp(11px,1.4vw,15px)] leading-[1.65]"><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#d8745e]" /><p><strong className="font-bold text-[#2d3b58]">Glycolysis</strong> happens in the cytoplasm — one glucose becomes two pyruvate molecules.</p></div><div className="ml-5 rounded-xl border border-[#dce1e5] bg-[#f7f9f7]/70 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#768698]">Remember</p><p className="font-semibold text-[#31415d]">Net yield: <span className="text-[#ce6b56]">2 ATP</span> + 2 NADH</p></div><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#799882]" /><p><strong className="font-bold text-[#2d3b58]">Krebs cycle</strong> takes place in the mitochondrial matrix. It releases CO₂ and loads electron carriers.</p></div><div className="relative ml-2 mt-8 h-36 rounded-2xl border border-dashed border-[#a8bac0] bg-[#edf4f0]/55"><div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"><div className="mx-auto mb-2 flex h-14 w-20 items-center justify-center rounded-full border-2 border-[#789c8c] text-[10px] font-bold text-[#658574]">MITOCHONDRION</div><div className="h-5 w-px bg-[#789c8c] mx-auto" /><p className="mt-1 text-[9px] font-semibold text-[#789c8c]">inner membrane = ATP synthase</p></div></div><div className="mt-6 flex items-center gap-3 border-t border-[#e6d7cf] pt-4 text-[11px] font-semibold text-[#c46c5a]"><CheckCircle2 size={15} /> Exam connection: compare aerobic vs anaerobic respiration</div></div>
                       </div> : <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]"><div className={`h-full ${tool === "text" ? "pointer-events-auto" : "pointer-events-none"}`}><textarea value={pageText[activePageKey] ?? ""} onChange={(event) => updatePageText(event.target.value)} readOnly={tool !== "text"} placeholder="Tap Text to type, or choose Pen to write by hand…" aria-label="Typed notes for this page" className="h-[66%] w-full resize-none bg-transparent pt-1 text-[clamp(16px,2vw,24px)] leading-[1.45] text-[#39465d] outline-none placeholder:text-[#b9b0a4]" /></div></div>}
-                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative block h-auto w-full touch-none rounded-[3px] bg-transparent" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
+                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative z-20 block h-auto w-full touch-none rounded-[3px] bg-transparent" style={{ pointerEvents: activeImageUrl && tool === "select" ? "none" : "auto" }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
                       {tool === "eraser" && eraserCursor && <div aria-hidden="true" className="pointer-events-none absolute z-20 rounded-full border-2 border-[#d66f59] bg-[#d66f59]/10 shadow-[0_0_0_1px_rgba(255,255,255,.8)]" style={{ left: `${(eraserCursor.x / CANVAS_WIDTH) * 100}%`, top: `${(eraserCursor.y / CANVAS_HEIGHT) * 100}%`, width: `${(84 / CANVAS_WIDTH) * 100}%`, aspectRatio: "1", transform: "translate(-50%, -50%)" }} />}
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
