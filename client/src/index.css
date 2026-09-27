@@ -404,3 +404,24 @@ main:has(.paper-frame) .paper-workspace {
     touch-action: pan-y pinch-zoom !important;
   }
 }
+
+/* Browser-compatible selectors: do not nest :has() inside :has(). */
+.app-shell:has(.paper-frame) > div {
+  display: block !important;
+  max-width: none !important;
+}
+.app-shell:has(.paper-frame) > div > aside {
+  display: none !important;
+}
+.app-shell:has(.paper-frame) > div > main {
+  width: 100% !important;
+  max-width: none !important;
+}
+main:has(.paper-frame) .paper-frame canvas {
+  touch-action: none !important;
+}
+@media (pointer: coarse) {
+  main:has(.paper-frame) .paper-frame canvas {
+    touch-action: pan-y pinch-zoom !important;
+  }
+}
