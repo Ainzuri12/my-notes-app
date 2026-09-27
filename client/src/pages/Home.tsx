@@ -69,7 +69,7 @@ type Notebook = {
 type Folder = { id: string; name: string; color: string; parentId?: string | null };
 
 const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 1680;
+const CANVAS_HEIGHT = 2400;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 
 function makeBoards(count: number, prefix = "Whiteboard", updated = "Edited a while ago"): Board[] {
@@ -341,6 +341,7 @@ export default function Home() {
   }
 
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
+    if (event.pointerType === "touch") return;
     if ((event.pointerType === "mouse" && event.button !== 0)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     setIsDrawing(true);
@@ -785,15 +786,15 @@ export default function Home() {
           </header>
 
           {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF")} /> : currentView === "editor" ? (
-            <div className="space-y-6 px-5 pb-14 pt-8 sm:px-8 lg:px-10 lg:pt-10">
-              <button onClick={() => setCurrentView("notebook")} className="flex items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-4 py-2.5 text-sm font-bold text-[#656660] transition hover:border-[#d49483]"><ChevronLeft size={15} /> Back to whiteboards</button>
-              <section className="overflow-hidden rounded-[26px] border border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
+            <div className="editor-view flex min-h-[calc(100vh-74px)] flex-col px-0 pb-0 pt-0" onContextMenu={(event) => event.preventDefault()}>
+              <button onClick={() => setCurrentView("notebook")} className="mx-5 mt-4 flex w-fit items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-4 py-2.5 text-sm font-bold text-[#656660] transition hover:border-[#d49483] sm:mx-8 lg:mx-10"><ChevronLeft size={15} /> Back to whiteboards</button>
+              <section className="mt-4 flex min-h-[calc(100vh-126px)] flex-1 flex-col overflow-hidden border-y border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
                 <div className="flex flex-col justify-between gap-5 border-b border-[#d7cfc1] px-5 py-5 sm:flex-row sm:items-center sm:px-7">
                   <div><div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#a56555]"><NotebookPen size={14} /> {activeNotebook?.title ?? "Notebook"}</div><h2 className="font-display text-2xl tracking-[-0.03em]">{activeBoard?.title ?? "Whiteboard"}</h2></div>
                   <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
-                <div className="grid min-h-[720px] lg:grid-cols-[minmax(0,1fr)_240px]">
-                  <div className="relative flex min-h-[640px] items-start justify-center overflow-auto bg-[#dcd4c7] p-5 sm:p-8 lg:p-12">
+                <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
+                  <div className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8">
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
                       <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length} onClick={undo} />
                       <ToolButton icon={<Redo2 size={16} />} label="Redo" disabled={!redoStack.length} onClick={redo} />
@@ -809,12 +810,12 @@ export default function Home() {
                     }))} onPageChange={(pageNumber) => {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
-                    }} /> : <div className="paper-frame relative mt-14 w-full max-w-[570px] origin-top shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
+                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
 {activeBoard?.id === "bio-cellular-respiration" ? <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]">
                         <div className="mb-8 flex items-start justify-between"><div><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#bf6958]">Biology · Unit 04</p><h3 className="font-display text-[clamp(20px,3vw,34px)] leading-none text-[#25344f]">Cellular respiration</h3><p className="mt-3 text-[11px] font-semibold text-[#7a8494]">Tuesday 24 September · Lecture 06</p></div><div className="rounded-lg border border-[#e2b8ab] bg-[#fdf5ed] px-2 py-1 text-[10px] font-bold text-[#c46c5a]">4 / 38</div></div>
                         <div className="space-y-5 text-[clamp(11px,1.4vw,15px)] leading-[1.65]"><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#d8745e]" /><p><strong className="font-bold text-[#2d3b58]">Glycolysis</strong> happens in the cytoplasm — one glucose becomes two pyruvate molecules.</p></div><div className="ml-5 rounded-xl border border-[#dce1e5] bg-[#f7f9f7]/70 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#768698]">Remember</p><p className="font-semibold text-[#31415d]">Net yield: <span className="text-[#ce6b56]">2 ATP</span> + 2 NADH</p></div><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#799882]" /><p><strong className="font-bold text-[#2d3b58]">Krebs cycle</strong> takes place in the mitochondrial matrix. It releases CO₂ and loads electron carriers.</p></div><div className="relative ml-2 mt-8 h-36 rounded-2xl border border-dashed border-[#a8bac0] bg-[#edf4f0]/55"><div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"><div className="mx-auto mb-2 flex h-14 w-20 items-center justify-center rounded-full border-2 border-[#789c8c] text-[10px] font-bold text-[#658574]">MITOCHONDRION</div><div className="h-5 w-px bg-[#789c8c] mx-auto" /><p className="mt-1 text-[9px] font-semibold text-[#789c8c]">inner membrane = ATP synthase</p></div></div><div className="mt-6 flex items-center gap-3 border-t border-[#e6d7cf] pt-4 text-[11px] font-semibold text-[#c46c5a]"><CheckCircle2 size={15} /> Exam connection: compare aerobic vs anaerobic respiration</div></div>
                       </div> : <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]"><div className={`h-full ${tool === "text" ? "pointer-events-auto" : "pointer-events-none"}`}><textarea value={pageText[activePageKey] ?? ""} onChange={(event) => updatePageText(event.target.value)} readOnly={tool !== "text"} placeholder="Tap Text to type, or choose Pen to write by hand…" aria-label="Typed notes for this page" className="h-[66%] w-full resize-none bg-transparent pt-1 text-[clamp(16px,2vw,24px)] leading-[1.45] text-[#39465d] outline-none placeholder:text-[#b9b0a4]" /></div></div>}
-                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative block h-auto w-full touch-none rounded-[3px] bg-transparent" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" />
+                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative block h-auto w-full touch-none rounded-[3px] bg-transparent" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
                   </div>
