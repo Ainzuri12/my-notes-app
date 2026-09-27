@@ -521,3 +521,17 @@ main:has(.paper-frame) > .space-y-6 > section > .grid > .editor-toolbar {
   overflow-x: auto !important;
   overflow-y: hidden !important;
 }
+
+/* On tablet widths the fixed tool strip must sit below the app header and
+   above the editor controls instead of covering the Back to whiteboards button. */
+@media (max-width: 1200px) {
+  main:has(.paper-frame) .editor-view { padding-top: 78px !important; }
+  main:has(.paper-frame) .editor-toolbar {
+    top: 76px !important;
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-width: none !important;
+    transform: none !important;
+  }
+}
