@@ -436,6 +436,32 @@ main:has(.paper-frame) .paper-frame { height: 6000px !important; min-height: 600
 main:has(.paper-frame) .paper-frame canvas { height: 6000px !important; min-height: 6000px !important; }
 main:has(.paper-frame) .paper-workspace { overflow: auto !important; }
 
+/* Imported images become manipulable when Select is active. The handle stays
+   above the handwriting canvas while the image itself remains behind ink in
+   every other tool mode. */
+.image-layer {
+  transform-origin: top left;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.image-layer-selected {
+  outline: 2px solid rgba(214, 111, 89, 0.9);
+  outline-offset: -2px;
+}
+.image-resize-handle {
+  position: absolute;
+  right: -9px;
+  bottom: -9px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #fffaf5;
+  border-radius: 999px;
+  background: #d66f59;
+  box-shadow: 0 1px 5px rgba(61, 51, 42, 0.3);
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
 /* Full-screen whiteboard: remove the unused right writing-tools column. */
 main:has(.paper-frame) > .editor-view > section > .grid,
 main:has(.paper-frame) > .space-y-6 > section > .grid {
