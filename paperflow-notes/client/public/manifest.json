@@ -1,0 +1,11 @@
+{
+  "name": "Paperflow Notes",
+  "short_name": "Paperflow",
+  "description": "A calm, tablet-first space for handwritten notes, imported documents, and focused study.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#24272b",
+  "orientation": "any",
+  "icons": []
+}
