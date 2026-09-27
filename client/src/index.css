@@ -123,3 +123,40 @@ button:not(:disabled), [role="button"]:not([aria-disabled="true"]), a[href], inp
 @layer base {
   * { @apply border-border outline-ring/50; }
 }
+
+/* Writing surfaces should feel like a canvas, not a web page. Keep browser
+   selection/callouts out of the way while preserving selection in the text tool. */
+html, body, button, [role="button"], .app-shell {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.editor-view,
+.editor-view * {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.editor-view textarea,
+.editor-view input {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+.paper-workspace {
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+}
+
+.paper-frame {
+  min-height: max(100%, calc(100vh - 210px));
+  aspect-ratio: auto;
+}
+
+.paper-frame canvas {
+  min-height: max(100%, calc(100vh - 210px));
+  touch-action: none;
+}
