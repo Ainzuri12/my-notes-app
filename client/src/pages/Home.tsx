@@ -237,6 +237,8 @@ export default function Home() {
   const [strokes, setStrokes] = useState<Stroke[]>(starterStrokes);
   const [history, setHistory] = useState<Stroke[][]>([]);
   const [redoStack, setRedoStack] = useState<Stroke[][]>([]);
+  const [imageHistory, setImageHistory] = useState<ImageLayout[]>([]);
+  const [imageRedoStack, setImageRedoStack] = useState<ImageLayout[]>([]);
   const [activePdf, setActivePdf] = useState<File | null>(null);
   const [activeImage, setActiveImage] = useState<File | null>(null);
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
@@ -334,6 +336,8 @@ export default function Home() {
     setImagePosition({ x: layout.x, y: layout.y });
     setImageScale(layout.scale);
     setImageSelected(false);
+    setImageHistory([]);
+    setImageRedoStack([]);
   }, [activePageKey]);
   useEffect(() => {
     writeStored(SETTINGS_STORAGE_KEY, { selectedColor, penSize, zoom } satisfies DrawingSettings);
@@ -413,6 +417,15 @@ export default function Home() {
   function endImageInteraction(event?: React.PointerEvent<HTMLDivElement>) {
     const drag = imageDragRef.current;
     if (drag && event && event.currentTarget.hasPointerCapture(drag.pointerId)) event.currentTarget.releasePointerCapture(drag.pointerId);
+    if (drag && activePageKey) {
+      const before = { x: drag.startLeft, y: drag.startTop, scale: drag.startScale };
+      const after = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
+      if (before.x !== after.x || before.y !== after.y || before.scale !== after.scale) {
+        setImageHistory((current) => [...current, before]);
+        setImageRedoStack([]);
+        setLastSaved("saving…");
+      }
+    }
     imageDragRef.current = null;
   }
 
@@ -628,6 +641,15 @@ export default function Home() {
   }
 
   function undo() {
+    const previousImage = imageHistory[imageHistory.length - 1];
+    if (previousImage && activePageKey) {
+      const currentImage = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
+      setImageRedoStack((current) => [...current, currentImage]);
+      setImageHistory((current) => current.slice(0, -1));
+      updateImageLayout(previousImage);
+      setImageSelected(true);
+      return;
+    }
     const previous = history[history.length - 1];
     if (!previous) return;
     setRedoStack((current) => [...current, strokesRef.current]);
@@ -637,6 +659,15 @@ export default function Home() {
   }
 
   function redo() {
+    const nextImage = imageRedoStack[imageRedoStack.length - 1];
+    if (nextImage && activePageKey) {
+      const currentImage = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
+      setImageHistory((current) => [...current, currentImage]);
+      setImageRedoStack((current) => current.slice(0, -1));
+      updateImageLayout(nextImage);
+      setImageSelected(true);
+      return;
+    }
     const next = redoStack[redoStack.length - 1];
     if (!next) return;
     setHistory((current) => [...current, strokesRef.current]);
@@ -996,8 +1027,8 @@ export default function Home() {
                 <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
                   <div className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8">
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
-                      <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length} onClick={undo} />
-                      <ToolButton icon={<Redo2 size={16} />} label="Redo" disabled={!redoStack.length} onClick={redo} />
+                      <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length && !imageHistory.length} onClick={undo} />
+                      <ToolButton icon={<Redo2 size={16} />} label="Redo" disabled={!redoStack.length && !imageRedoStack.length} onClick={redo} />
                       <span className="mx-1 h-5 w-px bg-[#cfc4b5]" />
                       <ToolButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={() => setZoom((value) => Math.max(75, value - 10))} />
                       <span className="min-w-[39px] text-center text-xs font-bold text-[#6e6c67]">{zoom}%</span>
