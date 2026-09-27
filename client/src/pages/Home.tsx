@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PdfDocumentViewer } from "@/components/PdfDocumentViewer";
-import { deleteImportedPdf, loadImportedPdf, saveImportedPdf } from "@/lib/pdfStore";
+import { deleteImportedPdf, loadImportedFile, saveImportedFile } from "@/lib/pdfStore";
 import { PDFDocument, rgb } from "pdf-lib";
 import {
   BookOpen,
@@ -235,6 +235,8 @@ export default function Home() {
   const [history, setHistory] = useState<Stroke[][]>([]);
   const [redoStack, setRedoStack] = useState<Stroke[][]>([]);
   const [activePdf, setActivePdf] = useState<File | null>(null);
+  const [activeImage, setActiveImage] = useState<File | null>(null);
+  const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
   const [pageText, setPageText] = useState<Record<string, string>>(getStoredPageText);
   const [lassoPoints, setLassoPoints] = useState<Point[]>([]);
   const [selectedStrokeIndexes, setSelectedStrokeIndexes] = useState<number[]>([]);
@@ -310,17 +312,39 @@ export default function Home() {
   }, [selectedColor, penSize, zoom]);
   useEffect(() => {
     let cancelled = false;
-    if (!activeNotebook?.subtitle.includes("Imported PDF")) {
+    const isImportedFile = activeNotebook?.subtitle.includes("Imported PDF") || activeNotebook?.subtitle.includes("Imported image");
+    if (!isImportedFile) {
       setActivePdf(null);
+      setActiveImage(null);
       return () => { cancelled = true; };
     }
-    loadImportedPdf(activeNotebook.id).then((file) => {
-      if (!cancelled) setActivePdf(file);
+    loadImportedFile(activeNotebook.id).then((file) => {
+      if (cancelled) return;
+      if (activeNotebook?.subtitle.includes("Imported image")) {
+        setActiveImage(file);
+        setActivePdf(null);
+      } else {
+        setActivePdf(file);
+        setActiveImage(null);
+      }
     }).catch(() => {
-      if (!cancelled) setActivePdf(null);
+      if (!cancelled) {
+        setActivePdf(null);
+        setActiveImage(null);
+      }
     });
     return () => { cancelled = true; };
   }, [activeNotebook?.id, activeNotebook?.subtitle]);
+
+  useEffect(() => {
+    if (!activeImage) {
+      setActiveImageUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(activeImage);
+    setActiveImageUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [activeImage]);
 
   function renderCanvas(nextStrokes = strokesRef.current) {
     const canvas = canvasRef.current;
@@ -573,12 +597,13 @@ export default function Home() {
     setSelectedNotebook(notebook.id);
     setSelectedNotebookIds([]);
     if (!notebook.subtitle.includes("Imported PDF")) setActivePdf(null);
+    if (!notebook.subtitle.includes("Imported image")) setActiveImage(null);
     setCurrentView("notebook");
   }
 
   function addWhiteboard(notebookOverride?: Notebook) {
     const notebook = notebookOverride ?? activeNotebook;
-    if (!notebook || (notebook.id === activeNotebook?.id && activePdf)) return;
+    if (!notebook || (notebook.id === activeNotebook?.id && (activePdf || activeImage))) return;
     const board: Board = { id: makeId(), title: `Whiteboard ${notebook.boards.length + 1}`, updated: "Edited just now" };
     setNotebooks((current) => current.map((item) => item.id === notebook.id ? { ...item, boards: [...item.boards, board], pages: item.boards.length + 1, updated: "Edited just now" } : item));
     setSelectedNotebook(notebook.id);
@@ -605,27 +630,28 @@ export default function Home() {
   function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const isSupported = ["application/pdf", "image/png", "image/jpeg", "image/webp"].includes(file.type) || /\.(pdf|png|jpe?g|webp)$/i.test(file.name);
+    const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    const isSupported = isPdf || isImage;
     if (!isSupported) {
-      toast.error("That file type is not supported", { description: "Import a PDF, PNG, JPG, or WEBP document." });
+      toast.error("That file type is not supported", { description: "Import a PDF, PNG, JPG, WEBP, or GIF file." });
       return;
     }
-    const importedPageCount = file.type === "application/pdf" ? 12 : 1;
+    const importedPageCount = isPdf ? 12 : 1;
     const imported: Notebook = {
       id: makeId(),
       title: formatFileName(file.name),
-      subtitle: `${file.type === "application/pdf" ? "Imported PDF" : "Imported image"} · ready to annotate`,
+      subtitle: `${isPdf ? "Imported PDF" : "Imported image"} · ready to annotate`,
       pages: importedPageCount,
       updated: "Imported just now",
-      color: file.type === "application/pdf" ? "navy" : "sage",
-      icon: file.type === "application/pdf" ? "PDF" : "IMG",
+      color: isPdf ? "navy" : "sage",
+      icon: isPdf ? "PDF" : "IMG",
       boards: makeBoards(importedPageCount, "Page", "Imported just now"),
     };
     setNotebooks((current) => [imported, ...current]);
-    setActivePdf(file.type === "application/pdf" ? file : null);
-    if (file.type === "application/pdf") {
-      saveImportedPdf(imported.id, file).then(() => { setActivePdf(file); toast.success("PDF saved for offline use", { description: "This document will be available after you reload Paperflow." }); }).catch(() => toast.error("PDF could not be saved locally", { description: "You can still annotate it for this session." }));
-    }
+    setActivePdf(isPdf ? file : null);
+    setActiveImage(isImage ? file : null);
+    saveImportedFile(imported.id, file).then(() => toast.success("File saved for offline use", { description: "This import will be available after you reload Paperflow." })).catch(() => toast.error("File could not be saved locally", { description: "You can still annotate it for this session." }));
     setSelectedNotebook(imported.id);
     setActiveBoardId(imported.boards[0].id);
     setCurrentView("editor");
@@ -827,7 +853,7 @@ export default function Home() {
 
   return (
     <div className="app-shell min-h-screen bg-[#f4f1ea] text-[#252628]">
-      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp" className="hidden" onChange={handleImport} />
+      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*" className="hidden" onChange={handleImport} />
       {showMobileNav && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <button className="absolute inset-0 bg-[#22252a]/40 backdrop-blur-sm" onClick={() => setShowMobileNav(false)} aria-label="Close menu" />
@@ -870,7 +896,7 @@ export default function Home() {
             </div>
           </header>
 
-          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF")} /> : currentView === "editor" ? (
+          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF") || activeNotebook.subtitle.includes("Imported image")} /> : currentView === "editor" ? (
             <div className="editor-view flex min-h-[calc(100vh-74px)] flex-col px-0 pb-0 pt-0" onContextMenu={(event) => event.preventDefault()}>
               <button onClick={() => setCurrentView("notebook")} className="mx-5 mt-4 flex w-fit items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-4 py-2.5 text-sm font-bold text-[#656660] transition hover:border-[#d49483] sm:mx-8 lg:mx-10"><ChevronLeft size={15} /> Back to whiteboards</button>
               <section className="mt-4 flex min-h-[calc(100vh-126px)] flex-1 flex-col overflow-hidden border-y border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
@@ -895,7 +921,8 @@ export default function Home() {
                     }))} onPageChange={(pageNumber) => {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
-                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
+                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden bg-white shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
+                      {activeImageUrl && <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="pointer-events-none absolute inset-0 z-0 h-full w-full object-contain" />}
 {activeBoard?.id === "bio-cellular-respiration" ? <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]">
                         <div className="mb-8 flex items-start justify-between"><div><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#bf6958]">Biology · Unit 04</p><h3 className="font-display text-[clamp(20px,3vw,34px)] leading-none text-[#25344f]">Cellular respiration</h3><p className="mt-3 text-[11px] font-semibold text-[#7a8494]">Tuesday 24 September · Lecture 06</p></div><div className="rounded-lg border border-[#e2b8ab] bg-[#fdf5ed] px-2 py-1 text-[10px] font-bold text-[#c46c5a]">4 / 38</div></div>
                         <div className="space-y-5 text-[clamp(11px,1.4vw,15px)] leading-[1.65]"><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#d8745e]" /><p><strong className="font-bold text-[#2d3b58]">Glycolysis</strong> happens in the cytoplasm — one glucose becomes two pyruvate molecules.</p></div><div className="ml-5 rounded-xl border border-[#dce1e5] bg-[#f7f9f7]/70 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#768698]">Remember</p><p className="font-semibold text-[#31415d]">Net yield: <span className="text-[#ce6b56]">2 ATP</span> + 2 NADH</p></div><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#799882]" /><p><strong className="font-bold text-[#2d3b58]">Krebs cycle</strong> takes place in the mitochondrial matrix. It releases CO₂ and loads electron carriers.</p></div><div className="relative ml-2 mt-8 h-36 rounded-2xl border border-dashed border-[#a8bac0] bg-[#edf4f0]/55"><div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"><div className="mx-auto mb-2 flex h-14 w-20 items-center justify-center rounded-full border-2 border-[#789c8c] text-[10px] font-bold text-[#658574]">MITOCHONDRION</div><div className="h-5 w-px bg-[#789c8c] mx-auto" /><p className="mt-1 text-[9px] font-semibold text-[#789c8c]">inner membrane = ATP synthase</p></div></div><div className="mt-6 flex items-center gap-3 border-t border-[#e6d7cf] pt-4 text-[11px] font-semibold text-[#c46c5a]"><CheckCircle2 size={15} /> Exam connection: compare aerobic vs anaerobic respiration</div></div>
@@ -907,7 +934,7 @@ export default function Home() {
                   </div>
                   <aside className="editor-toolbar border-t border-[#d2c8ba] bg-[#f4efe7]/80 lg:border-l lg:border-t-0">
                     <div className="flex items-center justify-between border-b border-[#d9d0c3] px-5 py-4"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Writing tools</span><button className="rounded-lg p-1.5 text-[#929089] hover:bg-[#e6dfd5]" onClick={() => showComingSoon("Toolbar settings")} aria-label="Toolbar settings"><Settings2 size={16} /></button></div>
-                    <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /><label className="editor-quick-color flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[#d5cbbd] bg-[#fffaf5] text-[#6f6d66]" title="Choose ink color"><Palette size={16} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute h-0 w-0 opacity-0" aria-label="Choose ink color" /></label><label className="editor-quick-size flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#d5cbbd] bg-[#fffaf5] px-2 text-[10px] font-bold text-[#6f6d66]" title="Adjust brush size"><span>Size</span><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><output>{penSize}</output></label></div>
+                    <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /><EditorTool active={false} icon={<FileUp size={18} />} label="Import" onClick={() => fileInputRef.current?.click()} /><label className="editor-quick-color flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[#d5cbbd] bg-[#fffaf5] text-[#6f6d66]" title="Choose ink color"><Palette size={16} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute h-0 w-0 opacity-0" aria-label="Choose ink color" /></label><label className="editor-quick-size flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#d5cbbd] bg-[#fffaf5] px-2 text-[10px] font-bold text-[#6f6d66]" title="Adjust brush size"><span>Size</span><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><output>{penSize}</output></label></div>
                     <div className="space-y-5 px-5 pb-5"><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Ink colour</span><span className="font-mono text-[10px] text-[#aaa59b]">{selectedColor.toUpperCase()}</span></div><div className="flex flex-wrap items-center gap-2"><ColorDot color="#2f456f" active={selectedColor === "#2f456f"} onClick={() => setSelectedColor("#2f456f")} /><ColorDot color="#d66f59" active={selectedColor === "#d66f59"} onClick={() => setSelectedColor("#d66f59")} /><ColorDot color="#6e927e" active={selectedColor === "#6e927e"} onClick={() => setSelectedColor("#6e927e")} /><ColorDot color="#d2a73b" active={selectedColor === "#d2a73b"} onClick={() => setSelectedColor("#d2a73b")} /><ColorDot color="#25282c" active={selectedColor === "#25282c"} onClick={() => setSelectedColor("#25282c")} /><label className="relative flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-[#bdb4a9] bg-[#fffaf5] text-[#8e8a81]" title="Choose a custom ink color"><Palette size={13} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Choose a custom ink color" /></label></div></div><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Brush size</span><span className="font-mono text-[10px] text-[#aaa59b]">{penSize}px</span></div><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="h-2 w-full cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><div className="mt-2 flex items-center justify-between text-[10px] text-[#aaa59b]"><span>1px</span><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#f9f6f0]" aria-hidden="true"><span className="rounded-full bg-[#2f456f]" style={{ width: `${Math.min(18, Math.max(2, penSize))}px`, height: `${Math.min(18, Math.max(2, penSize))}px` }} /></span><span>40px</span></div></div><div className="rounded-xl border border-[#ded4c6] bg-[#faf7f2] p-3"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#686861]"><Tablet size={14} className="text-[#c56b58]" /> Tablet ready</div><p className="text-[11px] leading-4 text-[#98958d]">Pressure-aware ink, palm-friendly input, and offline saves work across iPadOS, Android, and desktop.</p></div></div>
                     <div className="border-t border-[#d9d0c3] p-5"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Whiteboards</span><button onClick={() => addWhiteboard()} disabled={Boolean(activePdf)} className="rounded-lg p-1.5 text-[#77766f] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Add whiteboard"><Plus size={16} /></button></div><div className="flex items-center gap-2"><button onClick={() => { const board = activeNotebook?.boards[Math.max(0, activeBoardIndex - 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex <= 0} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous whiteboard"><ChevronLeft size={16} /></button><div className="flex-1 truncate rounded-lg border border-[#c9705c] bg-[#fffaf5] px-3 py-2 text-center text-sm font-bold text-[#4d4d48]">{activeBoard?.title ?? "Whiteboard"}</div><button onClick={() => { const board = activeNotebook?.boards[Math.min((activeNotebook.boards.length ?? 1) - 1, activeBoardIndex + 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex < 0 || activeBoardIndex >= (activeNotebook?.boards.length ?? 1) - 1} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Next whiteboard"><ChevronRight size={16} /></button></div></div>
                   </aside>
