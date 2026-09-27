@@ -23,6 +23,7 @@ import {
   Highlighter,
   Image as ImageIcon,
   LayoutList,
+  LayoutTemplate,
   Lasso,
   Minus,
   RotateCcw,
@@ -53,7 +54,7 @@ import {
 type Tool = "select" | "pen" | "highlight" | "eraser" | "lasso" | "line" | "text";
 type Point = { x: number; y: number; p: number };
 type Stroke = { points: Point[]; color: string; width: number; opacity: number };
-type Board = { id: string; title: string; updated: string; pageNumber?: number };
+type Board = { id: string; title: string; updated: string; pageNumber?: number; templateId?: string; color?: string };
 type Notebook = {
   id: string;
   title: string;
@@ -77,6 +78,16 @@ const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
 
 type DrawingSettings = { selectedColor: string; penSize: number; zoom: number };
 type ImageLayout = { x: number; y: number; scale: number };
+type PageTemplate = { id: string; name: string; description: string; icon: string; preview: string; color: string };
+
+const pageTemplates: PageTemplate[] = [
+  { id: "lined", name: "Lined notes", description: "Classic ruled paper for lectures and journaling.", icon: "≡", preview: "linear-gradient(#fffdf8 0 0) padding-box, repeating-linear-gradient(to bottom, transparent 0 30px, #d8e0e5 31px 32px)", color: "#fffdf8" },
+  { id: "dot-grid", name: "Dot grid", description: "A flexible grid for planning, diagrams, and sketches.", icon: "⁙", preview: "radial-gradient(#b8c7cf 1.2px, transparent 1.2px)", color: "#fffdf8" },
+  { id: "blank", name: "Blank canvas", description: "A clean page for freeform handwriting and drawing.", icon: "□", preview: "#fffdf8", color: "#fffdf8" },
+  { id: "cornell", name: "Cornell notes", description: "Notes, cues, and summary areas for revision.", icon: "▥", preview: "linear-gradient(90deg, transparent 0 24%, #e2b6a8 24% 24.5%, transparent 24.5%), linear-gradient(#fffdf8 0 0)", color: "#fffdf8" },
+  { id: "checklist", name: "Checklist", description: "A structured page for tasks, habits, and study plans.", icon: "✓", preview: "repeating-linear-gradient(to bottom, #fffdf8 0 30px, #d8e0e5 31px 32px)", color: "#fffdf8" },
+  { id: "graph", name: "Graph paper", description: "Precise squares for maths, charts, and geometry.", icon: "▦", preview: "linear-gradient(#d8e0e5 1px, transparent 1px), linear-gradient(90deg, #d8e0e5 1px, transparent 1px)", color: "#fffdf8" },
+];
 
 function readStored<T>(key: string, fallback: T): T {
   try {
@@ -222,7 +233,7 @@ export default function Home() {
   const [trashNotebooks, setTrashNotebooks] = useState<Notebook[]>(() => getStoredTrash<Notebook>("paperflow-trash-notebooks"));
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<string[]>([]);
-  const [currentView, setCurrentView] = useState<"library" | "notebook" | "editor" | "trash">("library");
+  const [currentView, setCurrentView] = useState<"library" | "notebook" | "editor" | "trash" | "templates">("library");
   const [selectedNotebookIds, setSelectedNotebookIds] = useState<string[]>([]);
   const [selectedNotebook, setSelectedNotebook] = useState("biology");
   const [activeBoardId, setActiveBoardId] = useState("bio-cellular-respiration");
@@ -252,6 +263,11 @@ export default function Home() {
   const [selectedStrokeIndexes, setSelectedStrokeIndexes] = useState<number[]>([]);
   const [lastSaved, setLastSaved] = useState("just now");
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
+  const [boardCreatorOpen, setBoardCreatorOpen] = useState(false);
+  const [boardCreatorNotebookId, setBoardCreatorNotebookId] = useState<string | null>(null);
+  const [boardCreatorTemplateId, setBoardCreatorTemplateId] = useState("lined");
+  const [boardCreatorCount, setBoardCreatorCount] = useState(1);
+  const [boardCreatorColor, setBoardCreatorColor] = useState("#fffdf8");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingStrokeRef = useRef<Stroke | null>(null);
   const strokesRef = useRef<Stroke[]>(strokes);
@@ -702,15 +718,30 @@ export default function Home() {
     setCurrentView("notebook");
   }
 
-  function addWhiteboard(notebookOverride?: Notebook) {
+  function openBoardCreator(notebookOverride?: Notebook, templateId = "lined") {
     const notebook = notebookOverride ?? activeNotebook;
     if (!notebook || (notebook.id === activeNotebook?.id && (activePdf || activeImage))) return;
-    const board: Board = { id: makeId(), title: `Whiteboard ${notebook.boards.length + 1}`, updated: "Edited just now" };
-    setNotebooks((current) => current.map((item) => item.id === notebook.id ? { ...item, boards: [...item.boards, board], pages: item.boards.length + 1, updated: "Edited just now" } : item));
+    const template = pageTemplates.find((item) => item.id === templateId) ?? pageTemplates[0];
+    setBoardCreatorNotebookId(notebook.id);
+    setBoardCreatorTemplateId(template.id);
+    setBoardCreatorColor(template.color);
+    setBoardCreatorCount(1);
+    setBoardCreatorOpen(true);
+  }
+
+  function createWhiteboards() {
+    const notebook = notebooks.find((item) => item.id === boardCreatorNotebookId);
+    const template = pageTemplates.find((item) => item.id === boardCreatorTemplateId) ?? pageTemplates[0];
+    if (!notebook || (notebook.id === activeNotebook?.id && (activePdf || activeImage))) return;
+    const count = Math.min(20, Math.max(1, boardCreatorCount));
+    const firstNumber = notebook.boards.length + 1;
+    const boards: Board[] = Array.from({ length: count }, (_, index) => ({ id: makeId(), title: `${template.name} ${firstNumber + index}`, updated: "Edited just now", templateId: template.id, color: boardCreatorColor }));
+    setNotebooks((current) => current.map((item) => item.id === notebook.id ? { ...item, boards: [...item.boards, ...boards], pages: item.boards.length + boards.length, updated: "Edited just now" } : item));
     setSelectedNotebook(notebook.id);
-    setActiveBoardId(board.id);
+    setActiveBoardId(boards[0].id);
+    setBoardCreatorOpen(false);
     setCurrentView("editor");
-    toast.success("New whiteboard added", { description: "A fresh blank page is ready for writing." });
+    toast.success(`${count} ${template.name.toLowerCase()} page${count === 1 ? "" : "s"} added`);
   }
 
   function openWhiteboard(board: Board) {
@@ -992,6 +1023,11 @@ export default function Home() {
       setCurrentView("library");
       return;
     }
+    if (label === "Templates") {
+      setCurrentView("templates");
+      setSelectedNotebookIds([]);
+      return;
+    }
     showComingSoon(label);
   }
 
@@ -1040,7 +1076,7 @@ export default function Home() {
             </div>
           </header>
 
-          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => addWhiteboard(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onRenameBoard={(boardId) => renameWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF") || activeNotebook.subtitle.includes("Imported image")} /> : currentView === "editor" ? (
+          {currentView === "trash" ? <TrashPanel trashFolders={trashFolders} trashNotebooks={trashNotebooks} onRestoreFolder={restoreFolder} onRestoreNotebook={restoreNotebook} onDeleteFolder={permanentlyDeleteFolder} onDeleteNotebook={permanentlyDeleteNotebook} onBack={() => setCurrentView("library")} /> : currentView === "templates" ? <TemplateGallery notebooks={notebooks} onBack={() => setCurrentView("library")} onChoose={(notebookId, templateId) => { const notebook = notebooks.find((item) => item.id === notebookId); if (notebook) openBoardCreator(notebook, templateId); }} /> : currentView === "notebook" && activeNotebook ? <NotebookBoardsView notebook={activeNotebook} onBack={() => setCurrentView("library")} onOpenBoard={openWhiteboard} onAddBoard={() => openBoardCreator(activeNotebook)} onDeleteBoard={(boardId) => deleteWhiteboard(activeNotebook.id, boardId)} onRenameBoard={(boardId) => renameWhiteboard(activeNotebook.id, boardId)} onImport={() => fileInputRef.current?.click()} isPdf={activeNotebook.subtitle.includes("Imported PDF") || activeNotebook.subtitle.includes("Imported image")} /> : currentView === "editor" ? (
             <div className="editor-view flex min-h-[calc(100vh-74px)] flex-col px-0 pb-0 pt-0" onContextMenu={(event) => event.preventDefault()}>
               <button onClick={() => setCurrentView("notebook")} className="mx-5 mt-4 flex w-fit items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-4 py-2.5 text-sm font-bold text-[#656660] transition hover:border-[#d49483] sm:mx-8 lg:mx-10"><ChevronLeft size={15} /> Back to whiteboards</button>
               <section className="mt-4 flex min-h-[calc(100vh-126px)] flex-1 flex-col overflow-hidden border-y border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
@@ -1066,7 +1102,7 @@ export default function Home() {
                     }))} onPageChange={(pageNumber) => {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
-                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden bg-white shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
+                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
                         {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
@@ -1084,7 +1120,7 @@ export default function Home() {
                     <div className="flex items-center justify-between border-b border-[#d9d0c3] px-5 py-4"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Writing tools</span><button className="rounded-lg p-1.5 text-[#929089] hover:bg-[#e6dfd5]" onClick={() => showComingSoon("Toolbar settings")} aria-label="Toolbar settings"><Settings2 size={16} /></button></div>
                     <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /><EditorTool active={false} icon={<FileUp size={18} />} label="Import" onClick={() => fileInputRef.current?.click()} /><label className="editor-quick-color flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[#d5cbbd] bg-[#fffaf5] text-[#6f6d66]" title="Choose ink color"><Palette size={16} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute h-0 w-0 opacity-0" aria-label="Choose ink color" /></label><label className="editor-quick-size flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#d5cbbd] bg-[#fffaf5] px-2 text-[10px] font-bold text-[#6f6d66]" title="Adjust brush size"><span>Size</span><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><output>{penSize}</output></label></div>
                     <div className="space-y-5 px-5 pb-5"><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Ink colour</span><span className="font-mono text-[10px] text-[#aaa59b]">{selectedColor.toUpperCase()}</span></div><div className="flex flex-wrap items-center gap-2"><ColorDot color="#2f456f" active={selectedColor === "#2f456f"} onClick={() => setSelectedColor("#2f456f")} /><ColorDot color="#d66f59" active={selectedColor === "#d66f59"} onClick={() => setSelectedColor("#d66f59")} /><ColorDot color="#6e927e" active={selectedColor === "#6e927e"} onClick={() => setSelectedColor("#6e927e")} /><ColorDot color="#d2a73b" active={selectedColor === "#d2a73b"} onClick={() => setSelectedColor("#d2a73b")} /><ColorDot color="#25282c" active={selectedColor === "#25282c"} onClick={() => setSelectedColor("#25282c")} /><label className="relative flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-[#bdb4a9] bg-[#fffaf5] text-[#8e8a81]" title="Choose a custom ink color"><Palette size={13} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Choose a custom ink color" /></label></div></div><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Brush size</span><span className="font-mono text-[10px] text-[#aaa59b]">{penSize}px</span></div><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="h-2 w-full cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><div className="mt-2 flex items-center justify-between text-[10px] text-[#aaa59b]"><span>1px</span><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#f9f6f0]" aria-hidden="true"><span className="rounded-full bg-[#2f456f]" style={{ width: `${Math.min(18, Math.max(2, penSize))}px`, height: `${Math.min(18, Math.max(2, penSize))}px` }} /></span><span>40px</span></div></div><div className="rounded-xl border border-[#ded4c6] bg-[#faf7f2] p-3"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#686861]"><Tablet size={14} className="text-[#c56b58]" /> Tablet ready</div><p className="text-[11px] leading-4 text-[#98958d]">Pressure-aware ink, palm-friendly input, and offline saves work across iPadOS, Android, and desktop.</p></div></div>
-                    <div className="border-t border-[#d9d0c3] p-5"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Whiteboards</span><button onClick={() => addWhiteboard()} disabled={Boolean(activePdf)} className="rounded-lg p-1.5 text-[#77766f] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Add whiteboard"><Plus size={16} /></button></div><div className="flex items-center gap-2"><button onClick={() => { const board = activeNotebook?.boards[Math.max(0, activeBoardIndex - 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex <= 0} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous whiteboard"><ChevronLeft size={16} /></button><div className="flex-1 truncate rounded-lg border border-[#c9705c] bg-[#fffaf5] px-3 py-2 text-center text-sm font-bold text-[#4d4d48]">{activeBoard?.title ?? "Whiteboard"}</div><button onClick={() => { const board = activeNotebook?.boards[Math.min((activeNotebook.boards.length ?? 1) - 1, activeBoardIndex + 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex < 0 || activeBoardIndex >= (activeNotebook?.boards.length ?? 1) - 1} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Next whiteboard"><ChevronRight size={16} /></button></div></div>
+                    <div className="border-t border-[#d9d0c3] p-5"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Whiteboards</span><button onClick={() => openBoardCreator(activeNotebook)} disabled={Boolean(activePdf)} className="rounded-lg p-1.5 text-[#77766f] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Add whiteboard"><Plus size={16} /></button></div><div className="flex items-center gap-2"><button onClick={() => { const board = activeNotebook?.boards[Math.max(0, activeBoardIndex - 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex <= 0} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous whiteboard"><ChevronLeft size={16} /></button><div className="flex-1 truncate rounded-lg border border-[#c9705c] bg-[#fffaf5] px-3 py-2 text-center text-sm font-bold text-[#4d4d48]">{activeBoard?.title ?? "Whiteboard"}</div><button onClick={() => { const board = activeNotebook?.boards[Math.min((activeNotebook.boards.length ?? 1) - 1, activeBoardIndex + 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex < 0 || activeBoardIndex >= (activeNotebook?.boards.length ?? 1) - 1} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Next whiteboard"><ChevronRight size={16} /></button></div></div>
                   </aside>
                 </div>
               </section>
@@ -1135,9 +1171,21 @@ export default function Home() {
           </div>
           )}
         </main>
+        {boardCreatorOpen && <BoardCreator templateId={boardCreatorTemplateId} count={boardCreatorCount} color={boardCreatorColor} onTemplateChange={(id) => { setBoardCreatorTemplateId(id); const template = pageTemplates.find((item) => item.id === id); if (template) setBoardCreatorColor(template.color); }} onCountChange={setBoardCreatorCount} onColorChange={setBoardCreatorColor} onCancel={() => setBoardCreatorOpen(false)} onCreate={createWhiteboards} />}
       </div>
     </div>
   );
+}
+
+function TemplateGallery({ notebooks, onBack, onChoose }: { notebooks: Notebook[]; onBack: () => void; onChoose: (notebookId: string, templateId: string) => void }) {
+  const [notebookId, setNotebookId] = useState(notebooks[0]?.id ?? "");
+  return <div className="space-y-8 px-5 pb-14 pt-8 sm:px-8 lg:px-10 lg:pt-10"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><div><button onClick={onBack} className="mb-4 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.22em] text-[#c56854] transition hover:text-[#a8523f]"><ChevronLeft size={14} /> Library</button><div className="flex items-center gap-3"><LayoutTemplate size={26} className="text-[#c56854]" /><div><h1 className="font-display text-4xl tracking-[-0.04em]">Page templates</h1><p className="mt-2 max-w-xl text-[15px] leading-6 text-[#737571]">Choose a page style, then create one or more whiteboards from it.</p></div></div></div><label className="flex items-center gap-2 rounded-xl border border-[#d8d0c4] bg-[#fffaf5] px-3 py-2 text-xs font-bold text-[#67675f]">Add to<select value={notebookId} onChange={(event) => setNotebookId(event.target.value)} className="max-w-[180px] bg-transparent outline-none">{notebooks.map((notebook) => <option key={notebook.id} value={notebook.id}>{notebook.title || "Untitled notebook"}</option>)}</select></label></div><div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">{pageTemplates.map((template) => <button key={template.id} onClick={() => notebookId && onChoose(notebookId, template.id)} className="group overflow-hidden rounded-[22px] border border-[#ded8cd] bg-[#f9f6f0] text-left shadow-[0_4px_12px_rgba(111,91,68,0.03)] transition hover:-translate-y-1 hover:border-[#d49382] hover:shadow-[0_12px_25px_rgba(111,91,68,0.1)]"><div className="relative h-44 overflow-hidden p-5" style={{ backgroundColor: template.color, backgroundImage: template.preview, backgroundSize: template.id === "graph" || template.id === "dot-grid" ? "18px 18px" : undefined }}><span className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-[#d66f59] text-xl font-bold text-white shadow-sm">{template.icon}</span><div className="absolute bottom-5 left-5 right-5 h-20 rounded-lg border border-[#c9c0b3]/60 bg-white/35 backdrop-blur-[1px]" /></div><div className="p-4"><h2 className="font-display text-2xl text-[#383936]">{template.name}</h2><p className="mt-1 text-sm leading-5 text-[#88867e]">{template.description}</p><span className="mt-4 inline-flex items-center gap-1 text-xs font-bold text-[#c56854]">Use this template <ChevronRight size={13} /></span></div></button>)}</div></div>;
+}
+
+function BoardCreator({ templateId, count, color, onTemplateChange, onCountChange, onColorChange, onCancel, onCreate }: { templateId: string; count: number; color: string; onTemplateChange: (id: string) => void; onCountChange: (count: number) => void; onColorChange: (color: string) => void; onCancel: () => void; onCreate: () => void }) {
+  const template = pageTemplates.find((item) => item.id === templateId) ?? pageTemplates[0];
+  const colors = ["#fffdf8", "#fff5ed", "#f1f7f0", "#f4f0f8", "#eef5f7", "#fffbe8"];
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#24272b]/45 p-4 backdrop-blur-sm"><div className="w-full max-w-2xl rounded-[26px] border border-[#ded5c9] bg-[#fbf8f2] p-5 shadow-[0_24px_70px_rgba(46,37,29,0.24)] sm:p-7"><div className="flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.18em] text-[#c56854]">New whiteboard pages</p><h2 className="mt-2 font-display text-3xl text-[#333432]">Choose your page setup</h2></div><button onClick={onCancel} className="rounded-lg p-2 text-[#8f8b83] hover:bg-[#eee6dc]" aria-label="Close"><X size={18} /></button></div><div className="mt-6 grid gap-3 sm:grid-cols-3">{pageTemplates.map((item) => <button key={item.id} onClick={() => onTemplateChange(item.id)} className={`rounded-xl border p-3 text-left transition ${item.id === template.id ? "border-[#d78672] bg-[#fff0e9]" : "border-[#e2dacf] bg-[#fffdf9] hover:border-[#d7b0a4]"}`}><div className="mb-2 h-16 rounded-lg border border-[#d8d0c4]" style={{ backgroundColor: item.color, backgroundImage: item.preview, backgroundSize: item.id === "graph" || item.id === "dot-grid" ? "12px 12px" : undefined }} /><p className="truncate text-sm font-bold text-[#4c4c47]">{item.name}</p></button>)}</div><div className="mt-6 grid gap-5 sm:grid-cols-2"><label className="block"><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-[#88847b]">Number of pages</span><input type="number" min="1" max="20" value={count} onChange={(event) => onCountChange(Math.min(20, Math.max(1, Number(event.target.value) || 1)))} className="w-full rounded-xl border border-[#d8d0c4] bg-[#fffdf9] px-3 py-2.5 text-sm font-semibold text-[#4c4c47] outline-none focus:border-[#d78672]" /></label><div><span className="mb-2 block text-xs font-bold uppercase tracking-[0.16em] text-[#88847b]">Page color</span><div className="flex flex-wrap items-center gap-2">{colors.map((swatch) => <button key={swatch} onClick={() => onColorChange(swatch)} className={`h-8 w-8 rounded-full border-2 ${color === swatch ? "border-[#c56854] ring-2 ring-[#f0c2b5] ring-offset-2" : "border-[#d0c8bd]"}`} style={{ backgroundColor: swatch }} aria-label={`Use ${swatch} page color`} />)}<label className="relative h-8 w-8 cursor-pointer overflow-hidden rounded-full border-2 border-dashed border-[#bdb4a9] bg-[#fffaf5]"><Palette size={14} className="absolute inset-0 m-auto text-[#8e8a81]" /><input type="color" value={color} onChange={(event) => onColorChange(event.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Choose custom page color" /></label></div></div></div><div className="mt-7 flex justify-end gap-2"><button onClick={onCancel} className="rounded-xl px-4 py-2.5 text-sm font-bold text-[#77746e] hover:bg-[#eee6dc]">Cancel</button><button onClick={onCreate} className="flex items-center gap-2 rounded-xl bg-[#d66f59] px-5 py-2.5 text-sm font-bold text-white shadow-[0_8px_18px_rgba(208,103,80,0.18)] hover:bg-[#c5604d]"><Plus size={16} /> Create {count} page{count === 1 ? "" : "s"}</button></div></div></div>;
 }
 
 function NotebookBoardsView({ notebook, onBack, onOpenBoard, onAddBoard, onDeleteBoard, onRenameBoard, onImport, isPdf }: { notebook: Notebook; onBack: () => void; onOpenBoard: (board: Board) => void; onAddBoard: () => void; onDeleteBoard: (boardId: string) => void; onRenameBoard: (boardId: string) => void; onImport: () => void; isPdf: boolean }) {
