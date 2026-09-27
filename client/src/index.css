@@ -473,3 +473,51 @@ main:has(.paper-frame) > .space-y-6 > section > .grid > aside {
   align-items: center !important;
   overflow: hidden !important;
 }
+
+/* The editor toolbar must never compress its labels into clipped buttons. Keep
+   each control intact and let narrow screens scroll the strip horizontally. */
+main:has(.paper-frame) .editor-toolbar {
+  width: max-content !important;
+  max-width: calc(100vw - 24px) !important;
+  height: auto !important;
+  min-height: 42px !important;
+  max-height: 54px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  flex-wrap: nowrap !important;
+  scrollbar-width: none;
+}
+
+main:has(.paper-frame) .editor-toolbar::-webkit-scrollbar { display: none; }
+
+main:has(.paper-frame) .editor-toolbar > div:nth-child(2) {
+  flex: 0 0 auto !important;
+  flex-wrap: nowrap !important;
+  white-space: nowrap;
+}
+
+main:has(.paper-frame) .editor-toolbar > div:nth-child(2) > button {
+  flex: 0 0 auto !important;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  main:has(.paper-frame) .editor-toolbar {
+    left: 60px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-width: none !important;
+    transform: none !important;
+  }
+}
+
+/* Match the legacy layout selector's specificity so the toolbar can grow past
+   the old 42px clipping box. */
+main:has(.paper-frame) > .editor-view > section > .grid > .editor-toolbar,
+main:has(.paper-frame) > .space-y-6 > section > .grid > .editor-toolbar {
+  height: 66px !important;
+  min-height: 66px !important;
+  max-height: 66px !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+}
