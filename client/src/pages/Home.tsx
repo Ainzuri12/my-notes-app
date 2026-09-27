@@ -190,6 +190,14 @@ function pointInPolygon(point: Point, polygon: Point[]) {
   return inside;
 }
 
+function distanceToSegment(point: Point, start: Point, end: Point) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (dx === 0 && dy === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+  const progress = Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(point.x - (start.x + progress * dx), point.y - (start.y + progress * dy));
+}
+
 export default function Home() {
   const [notebooks, setNotebooks] = useState<Notebook[]>(getStoredNotebooks);
   const [folders, setFolders] = useState<Folder[]>(getStoredFolders);
@@ -223,6 +231,7 @@ export default function Home() {
   const strokesRef = useRef<Stroke[]>(strokes);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const movingRef = useRef<{ last: Point } | null>(null);
+  const eraserPointRef = useRef<Point | null>(null);
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
@@ -342,6 +351,23 @@ export default function Home() {
     context.restore();
   }
 
+  function eraseAtPoint(point: Point, previousPoint: Point | null = null) {
+    const radius = 42;
+    const remaining = strokesRef.current.filter((stroke) => {
+      const hit = stroke.points.some((strokePoint, index) => {
+        if (Math.hypot(strokePoint.x - point.x, strokePoint.y - point.y) < radius) return true;
+        if (!previousPoint) return false;
+        const priorStrokePoint = stroke.points[Math.max(0, index - 1)];
+        return distanceToSegment(strokePoint, previousPoint, point) < radius || distanceToSegment(priorStrokePoint, previousPoint, point) < radius;
+      });
+      return !hit;
+    });
+    if (remaining.length === strokesRef.current.length) return;
+    strokesRef.current = remaining;
+    setStrokes(remaining);
+    setRedoStack([]);
+  }
+
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>) {
     if (tool === "eraser" && event.pointerType !== "touch") setEraserCursor(normalizePoint(event));
     if (event.pointerType === "touch") {
@@ -372,12 +398,8 @@ export default function Home() {
     }
     if (tool === "eraser") {
       setHistory((current) => [...current, strokesRef.current]);
-      const remaining = strokesRef.current.filter((stroke) => {
-        const hit = stroke.points.some((strokePoint) => Math.hypot(strokePoint.x - point.x, strokePoint.y - point.y) < 42);
-        return !hit;
-      });
-      strokesRef.current = remaining;
-      setStrokes(remaining);
+      eraserPointRef.current = point;
+      eraseAtPoint(point);
       return;
     }
     const stroke: Stroke = {
@@ -421,7 +443,22 @@ export default function Home() {
       setStrokes(next);
       return;
     }
-    if (tool === "eraser") return;
+    if (tool === "eraser") {
+      const events = event.nativeEvent.getCoalescedEvents?.() ?? [event.nativeEvent];
+      events.forEach((nativeEvent) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const bounds = canvas.getBoundingClientRect();
+        const nextPoint: Point = {
+          x: ((nativeEvent.clientX - bounds.left) / bounds.width) * CANVAS_WIDTH,
+          y: ((nativeEvent.clientY - bounds.top) / bounds.height) * CANVAS_HEIGHT,
+          p: nativeEvent.pressure || 0.5,
+        };
+        eraseAtPoint(nextPoint, eraserPointRef.current);
+        eraserPointRef.current = nextPoint;
+      });
+      return;
+    }
     const current = drawingStrokeRef.current;
     if (!current) return;
     if (tool === "line") {
@@ -448,6 +485,7 @@ export default function Home() {
 
   function finishStroke(event?: React.PointerEvent<HTMLCanvasElement>) {
     if (event?.pointerType !== "touch") setEraserCursor(null);
+    eraserPointRef.current = null;
     if (event?.pointerType === "touch") {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       touchPanRef.current = null;
@@ -847,7 +885,7 @@ export default function Home() {
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
                   </div>
-                  <aside className="border-t border-[#d2c8ba] bg-[#f4efe7]/80 lg:border-l lg:border-t-0">
+                  <aside className="editor-toolbar border-t border-[#d2c8ba] bg-[#f4efe7]/80 lg:border-l lg:border-t-0">
                     <div className="flex items-center justify-between border-b border-[#d9d0c3] px-5 py-4"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Writing tools</span><button className="rounded-lg p-1.5 text-[#929089] hover:bg-[#e6dfd5]" onClick={() => showComingSoon("Toolbar settings")} aria-label="Toolbar settings"><Settings2 size={16} /></button></div>
                     <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /></div>
                     <div className="space-y-5 px-5 pb-5"><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Ink colour</span><span className="font-mono text-[10px] text-[#aaa59b]">{selectedColor.toUpperCase()}</span></div><div className="flex flex-wrap gap-2"><ColorDot color="#2f456f" active={selectedColor === "#2f456f"} onClick={() => setSelectedColor("#2f456f")} /><ColorDot color="#d66f59" active={selectedColor === "#d66f59"} onClick={() => setSelectedColor("#d66f59")} /><ColorDot color="#6e927e" active={selectedColor === "#6e927e"} onClick={() => setSelectedColor("#6e927e")} /><ColorDot color="#d2a73b" active={selectedColor === "#d2a73b"} onClick={() => setSelectedColor("#d2a73b")} /><ColorDot color="#25282c" active={selectedColor === "#25282c"} onClick={() => setSelectedColor("#25282c")} /><button onClick={() => showComingSoon("Custom colours")} className="flex h-7 w-7 items-center justify-center rounded-full border border-dashed border-[#bdb4a9] text-[#8e8a81]"><Palette size={13} /></button></div></div><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Pen size</span><span className="text-[#aaa59b]">{penSize}px</span></div><div className="flex items-center gap-2"><button onClick={() => setPenSize(2)} className={`flex h-9 flex-1 items-center justify-center rounded-lg border ${penSize === 2 ? "border-[#c8705d] bg-[#fff7f2]" : "border-[#ded6cb] bg-[#f9f6f0]"}`}><span className="h-1 w-5 rounded-full bg-[#2f456f]" /></button><button onClick={() => setPenSize(4)} className={`flex h-9 flex-1 items-center justify-center rounded-lg border ${penSize === 4 ? "border-[#c8705d] bg-[#fff7f2]" : "border-[#ded6cb] bg-[#f9f6f0]"}`}><span className="h-1.5 w-5 rounded-full bg-[#2f456f]" /></button><button onClick={() => setPenSize(7)} className={`flex h-9 flex-1 items-center justify-center rounded-lg border ${penSize === 7 ? "border-[#c8705d] bg-[#fff7f2]" : "border-[#ded6cb] bg-[#f9f6f0]"}`}><span className="h-2.5 w-5 rounded-full bg-[#2f456f]" /></button></div></div><div className="rounded-xl border border-[#ded4c6] bg-[#faf7f2] p-3"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#686861]"><Tablet size={14} className="text-[#c56b58]" /> Tablet ready</div><p className="text-[11px] leading-4 text-[#98958d]">Pressure-aware ink, palm-friendly input, and offline saves work across iPadOS, Android, and desktop.</p></div></div>
