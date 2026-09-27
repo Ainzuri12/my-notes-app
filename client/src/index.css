@@ -526,6 +526,15 @@ main:has(.paper-frame) > .space-y-6 > section > .grid > .editor-toolbar {
    above the editor controls instead of covering the Back to whiteboards button. */
 @media (max-width: 1200px) {
   main:has(.paper-frame) .editor-view { padding-top: 78px !important; }
+  main:has(.paper-frame) > .editor-view > section > .grid > aside.editor-toolbar,
+  main:has(.paper-frame) > .space-y-6 > section > .grid > aside.editor-toolbar {
+    top: 78px !important;
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-width: none !important;
+    transform: none !important;
+  }
   main:has(.paper-frame) .editor-toolbar {
     top: 76px !important;
     left: 10px !important;
@@ -534,4 +543,12 @@ main:has(.paper-frame) > .space-y-6 > section > .grid > .editor-toolbar {
     max-width: none !important;
     transform: none !important;
   }
+}
+
+/* The fixed-toolbar selector above is intentionally repeated with its full
+   specificity: the legacy aside rule otherwise wins and puts the strip at
+   the top edge over the Back to whiteboards control. */
+main:has(.paper-frame) > .editor-view > section > .grid > aside.editor-toolbar,
+main:has(.paper-frame) > .space-y-6 > section > .grid > aside.editor-toolbar {
+  top: 78px !important;
 }
