@@ -747,3 +747,9 @@ main:has(.paper-frame) .paper-frame canvas { height: 20000px !important; min-hei
 /* Overview is opt-in from the editor menu so it never obstructs handwriting. */
 .canvas-minimap { animation: minimap-in 160ms ease-out; }
 @keyframes minimap-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Pointer events drive our own mobile pinch recognizer; do not let the browser
+   replace it with page-level zoom or scroll gestures. */
+main:has(.paper-frame) .paper-workspace { touch-action: none !important; }
+main:has(.paper-frame) .paper-frame,
+main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
