@@ -24,6 +24,7 @@ import {
   Image as ImageIcon,
   LayoutList,
   LayoutTemplate,
+  Map as MapIcon,
   Lasso,
   Minus,
   RotateCcw,
@@ -265,7 +266,8 @@ export default function Home() {
   const [selectedColor, setSelectedColor] = useState(() => getStoredSettings().selectedColor);
   const [penSize, setPenSize] = useState(() => getStoredSettings().penSize);
   const [zoom, setZoom] = useState(() => getStoredSettings().zoom);
-  const [workspaceScroll, setWorkspaceScroll] = useState({ top: 0, scrollHeight: 12000, clientHeight: 720 });
+  const [workspaceScroll, setWorkspaceScroll] = useState({ top: 0, scrollHeight: 20000, clientHeight: 720 });
+  const [minimapOpen, setMinimapOpen] = useState(false);
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
@@ -1343,7 +1345,7 @@ export default function Home() {
               <section className="mt-4 flex min-h-[calc(100vh-126px)] flex-1 flex-col overflow-hidden border-y border-[#dcd6ca] bg-[#ebe5da] shadow-[0_14px_35px_rgba(87,72,55,0.06)]">
                 <div className="flex flex-col justify-between gap-5 border-b border-[#d7cfc1] px-5 py-5 sm:flex-row sm:items-center sm:px-7">
                   <div><div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#a56555]"><NotebookPen size={14} /> {activeNotebook?.title ?? "Notebook"}</div><h2 className="font-display text-2xl tracking-[-0.03em]">{activeBoard?.title ?? "Whiteboard"}</h2></div>
-                  <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
+                  <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={() => setMinimapOpen((open) => !open)} className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${minimapOpen ? "border-[#d66f59] bg-[#fff0e9] text-[#a95544]" : "border-[#cfc5b7] bg-[#f8f5ef]/75 text-[#464743] hover:bg-white"}`} aria-pressed={minimapOpen} aria-label="Toggle canvas overview"><MapIcon size={15} /> <span className="hidden sm:inline">Overview</span></button><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
                 <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
                   <div ref={workspaceRef} className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel} onScroll={(event) => { const element = event.currentTarget; setWorkspaceScroll({ top: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }); }}>
@@ -1353,14 +1355,14 @@ export default function Home() {
                       <span className="mx-1 h-5 w-px bg-[#cfc4b5]" />
                       {(activeImage || activePageImages.length > 0) && <span className="ml-1 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]"><ImageIcon size={14} className="inline" /> {activePageImages.length || 1} image{(activePageImages.length || 1) === 1 ? "" : "s"}</span>}
                     </div>
-                    <div className="canvas-minimap" aria-label="Canvas overview navigation">
+                    {minimapOpen && <div className="canvas-minimap" aria-label="Canvas overview navigation">
                       <div className="minimap-label"><span>Overview</span><span>{Math.round(zoom)}%</span></div>
                       <button className="minimap-track" aria-label="Jump to canvas position" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const fraction = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)); const workspace = workspaceRef.current; if (workspace) workspace.scrollTo({ top: fraction * Math.max(0, workspace.scrollHeight - workspace.clientHeight), behavior: "smooth" }); }}>
                         <span className="minimap-paper" />
                         <span className="minimap-viewport" style={{ top: `${Math.min(100, Math.max(0, (workspaceScroll.top / Math.max(1, workspaceScroll.scrollHeight - workspaceScroll.clientHeight)) * 100))}%`, height: `${Math.min(88, Math.max(18, (workspaceScroll.clientHeight / Math.max(1, workspaceScroll.scrollHeight)) * 150))}px` }} />
                       </button>
                       <span className="minimap-hint">Tap to jump · drag canvas to pan</span>
-                    </div>
+                    </div>}
                     <div className="zoom-dock" aria-label="Canvas zoom controls">
                       <button onClick={() => setZoom((value) => Math.max(4, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
                       <button className="zoom-value" onClick={resetZoom} aria-label="Reset zoom to 100 percent" title="Reset zoom">{zoom}%</button>
