@@ -80,7 +80,7 @@ type Notebook = {
 type Folder = { id: string; name: string; color: string; parentId?: string | null };
 
 const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 6000;
+const CANVAS_HEIGHT = 12000;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
@@ -848,7 +848,13 @@ export default function Home() {
     setLastSaved("saving…");
   }
   function resetZoom() { setZoom(100); }
-  function fitZoom() { setZoom(85); }
+  function fitZoom() { setZoom(75); }
+  function handleWorkspaceWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    setZoom((value) => Math.min(200, Math.max(25, value + direction * 5)));
+  }
   function undo() {
     const previousPageImages = pageImageHistory[pageImageHistory.length - 1];
     if (previousPageImages && activePageKey) {
@@ -1306,15 +1312,19 @@ export default function Home() {
                   <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
                 <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
-                  <div className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8">
+                  <div className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel}>
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
                       <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length && !imageHistory.length} onClick={undo} />
                       <ToolButton icon={<Redo2 size={16} />} label="Redo" disabled={!redoStack.length && !imageRedoStack.length} onClick={redo} />
                       <span className="mx-1 h-5 w-px bg-[#cfc4b5]" />
-                      <ToolButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={() => setZoom((value) => Math.max(75, value - 10))} />
-                      <span className="min-w-[39px] text-center text-xs font-bold text-[#6e6c67]">{zoom}%</span>
-                      <ToolButton icon={<ZoomIn size={16} />} label="Zoom in" onClick={() => setZoom((value) => Math.min(130, value + 10))} /><ToolButton icon={<Maximize2 size={16} />} label="Fit page" onClick={fitZoom} /><button onClick={resetZoom} className="rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67] hover:bg-[#e1d8cb]" aria-label="Reset zoom to 100 percent">100%</button>
                       {(activeImage || activePageImages.length > 0) && <span className="ml-1 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]"><ImageIcon size={14} className="inline" /> {activePageImages.length || 1} image{(activePageImages.length || 1) === 1 ? "" : "s"}</span>}
+                    </div>
+                    <div className="zoom-dock" aria-label="Canvas zoom controls">
+                      <button onClick={() => setZoom((value) => Math.max(25, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
+                      <button className="zoom-value" onClick={resetZoom} aria-label="Reset zoom to 100 percent" title="Reset zoom">{zoom}%</button>
+                      <button onClick={() => setZoom((value) => Math.min(200, value + 5))} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} /></button>
+                      <span className="zoom-dock-divider" />
+                      <button onClick={fitZoom} aria-label="Fit canvas" title="Fit canvas"><Maximize2 size={14} /></button>
                     </div>
                     {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => setNotebooks((current) => current.map((notebook) => {
                       if (notebook.id !== activeNotebook?.id) return notebook;
