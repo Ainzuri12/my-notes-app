@@ -80,7 +80,7 @@ type Notebook = {
 type Folder = { id: string; name: string; color: string; parentId?: string | null };
 
 const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 12000;
+const CANVAS_HEIGHT = 20000;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
@@ -209,7 +209,7 @@ function getStoredSettings(): DrawingSettings {
   return {
     selectedColor: /^#[0-9a-f]{6}$/i.test(stored.selectedColor ?? "") ? stored.selectedColor! : "#2f456f",
     penSize: Math.min(40, Math.max(1, Number(stored.penSize) || 4)),
-    zoom: Math.min(130, Math.max(75, Number(stored.zoom) || 100)),
+    zoom: Math.min(200, Math.max(4, Number(stored.zoom) || 100)),
   };
 }
 function getStoredTrash<T>(key: string): T[] {
@@ -738,7 +738,7 @@ export default function Home() {
         const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
         const centerX = (first.x + second.x) / 2;
         const centerY = (first.y + second.y) / 2;
-        const nextZoom = Math.min(200, Math.max(25, pinch.startZoom * (distance / pinch.startDistance)));
+        const nextZoom = Math.min(200, Math.max(4, pinch.startZoom * (distance / pinch.startDistance)));
         pinch.workspace.scrollLeft = Math.max(0, pinch.startScrollLeft - (centerX - pinch.startCenterX));
         pinch.workspace.scrollTop = Math.max(0, pinch.startScrollTop - (centerY - pinch.startCenterY));
         setZoom(Math.round(nextZoom));
@@ -887,7 +887,7 @@ export default function Home() {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     const direction = event.deltaY > 0 ? -1 : 1;
-    setZoom((value) => Math.min(200, Math.max(25, value + direction * 5)));
+    setZoom((value) => Math.min(200, Math.max(4, value + direction * 5)));
   }
   function undo() {
     const previousPageImages = pageImageHistory[pageImageHistory.length - 1];
@@ -1362,7 +1362,7 @@ export default function Home() {
                       <span className="minimap-hint">Tap to jump · drag canvas to pan</span>
                     </div>
                     <div className="zoom-dock" aria-label="Canvas zoom controls">
-                      <button onClick={() => setZoom((value) => Math.max(25, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
+                      <button onClick={() => setZoom((value) => Math.max(4, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
                       <button className="zoom-value" onClick={resetZoom} aria-label="Reset zoom to 100 percent" title="Reset zoom">{zoom}%</button>
                       <button onClick={() => setZoom((value) => Math.min(200, value + 5))} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} /></button>
                       <span className="zoom-dock-divider" />
@@ -1375,7 +1375,7 @@ export default function Home() {
                     }))} onPageChange={(pageNumber) => {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
-                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${(zoom - 100) * 3}px` }}>
+                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
                         {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
