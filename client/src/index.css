@@ -764,3 +764,10 @@ main:has(.paper-frame) .paper-frame {
 main:has(.paper-frame) .paper-frame canvas {
   width: 100% !important;
 }
+
+/* Keep the wide paper from shrinking to the viewport because it is a flex item. */
+main:has(.paper-frame) .paper-frame {
+  flex: 0 0 2200px !important;
+  width: 2200px !important;
+  max-width: none !important;
+}
