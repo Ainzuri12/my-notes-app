@@ -75,9 +75,11 @@ const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
 const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
+const IMAGE_ITEMS_STORAGE_KEY = "paperflow-image-items";
 
 type DrawingSettings = { selectedColor: string; penSize: number; zoom: number };
 type ImageLayout = { x: number; y: number; scale: number };
+type ImageItem = { id: string; name: string; layout: ImageLayout };
 type PageTemplate = { id: string; name: string; description: string; icon: string; preview: string; color: string };
 
 const pageTemplates: PageTemplate[] = [
@@ -226,6 +228,14 @@ function distanceToSegment(point: Point, start: Point, end: Point) {
   return Math.hypot(point.x - (start.x + progress * dx), point.y - (start.y + progress * dy));
 }
 
+function getStrokeBounds(strokes: Stroke[], indexes: number[]) {
+  const points = indexes.flatMap((index) => strokes[index]?.points ?? []);
+  if (!points.length) return null;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return { left: Math.min(...xs), top: Math.min(...ys), width: Math.max(1, Math.max(...xs) - Math.min(...xs)), height: Math.max(1, Math.max(...ys) - Math.min(...ys)) };
+}
+
 export default function Home() {
   const [notebooks, setNotebooks] = useState<Notebook[]>(getStoredNotebooks);
   const [folders, setFolders] = useState<Folder[]>(getStoredFolders);
@@ -255,6 +265,12 @@ export default function Home() {
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
   const [imagePageKeys, setImagePageKeys] = useState<Record<string, boolean>>(() => readStored(IMAGE_PAGE_STORAGE_KEY, {}));
   const [imageLayouts, setImageLayouts] = useState<Record<string, ImageLayout>>(() => readStored(IMAGE_LAYOUT_STORAGE_KEY, {}));
+  const [pageImages, setPageImages] = useState<Record<string, ImageItem[]>>(() => readStored(IMAGE_ITEMS_STORAGE_KEY, {}));
+  const [activePageImages, setActivePageImages] = useState<Array<{ item: ImageItem; file: File; url: string }>>([]);
+  const [selectedPageImageId, setSelectedPageImageId] = useState<string | null>(null);
+  const [pageImageMenuId, setPageImageMenuId] = useState<string | null>(null);
+  const [pageImageHistory, setPageImageHistory] = useState<ImageItem[][]>([]);
+  const [pageImageRedoStack, setPageImageRedoStack] = useState<ImageItem[][]>([]);
   const [imageScale, setImageScale] = useState(100);
   const [imagePosition, setImagePosition] = useState({ x: 0, y: 0 });
   const [imageSelected, setImageSelected] = useState(false);
@@ -273,11 +289,16 @@ export default function Home() {
   const strokesRef = useRef<Stroke[]>(strokes);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const movingRef = useRef<{ last: Point } | null>(null);
+  const selectionBeforeRef = useRef<Stroke[] | null>(null);
   const eraserPointRef = useRef<Point | null>(null);
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
   const imageDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startLeft: number; startTop: number; startScale: number; paper: HTMLElement; pointerId: number } | null>(null);
+  const pageImagesRef = useRef<ImageItem[]>([]);
+  const imageLayoutRef = useRef<ImageLayout>({ x: 0, y: 0, scale: 100 });
+  const pageImageDragRef = useRef<{ id: string; mode: "move" | "resize"; startX: number; startY: number; start: ImageLayout; paper: HTMLElement; pointerId: number } | null>(null);
+  const pageImageHoldTimer = useRef<number | null>(null);
 
   const activeNotebook = notebooks.find((notebook) => notebook.id === selectedNotebook) ?? notebooks[0];
   const activeBoardIndex = activeNotebook?.boards.findIndex((board) => board.id === activeBoardId) ?? -1;
@@ -286,6 +307,8 @@ export default function Home() {
   const filteredNotebooks = notebooks.filter((notebook) =>
     `${notebook.title} ${notebook.subtitle}`.toLowerCase().includes(search.toLowerCase()),
   );
+  const selectedBounds = getStrokeBounds(strokes, selectedStrokeIndexes);
+  const activePageImageIds = activePageKey ? (pageImages[activePageKey] ?? []).map((item) => item.id).join(",") : "";
 
   useEffect(() => {
     strokesRef.current = strokes;
@@ -347,13 +370,19 @@ export default function Home() {
     writeStored(IMAGE_LAYOUT_STORAGE_KEY, imageLayouts);
   }, [imageLayouts]);
   useEffect(() => {
+    writeStored(IMAGE_ITEMS_STORAGE_KEY, pageImages);
+  }, [pageImages]);
+  useEffect(() => {
     if (!activePageKey) return;
     const layout = imageLayouts[activePageKey] ?? { x: 0, y: 0, scale: 100 };
+    imageLayoutRef.current = layout;
     setImagePosition({ x: layout.x, y: layout.y });
     setImageScale(layout.scale);
     setImageSelected(false);
     setImageHistory([]);
     setImageRedoStack([]);
+    setPageImageHistory([]);
+    setPageImageRedoStack([]);
   }, [activePageKey]);
   useEffect(() => {
     writeStored(SETTINGS_STORAGE_KEY, { selectedColor, penSize, zoom } satisfies DrawingSettings);
@@ -395,13 +424,105 @@ export default function Home() {
     return () => URL.revokeObjectURL(url);
   }, [activeImage]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const items = activePageKey ? (pageImages[activePageKey] ?? []) : [];
+    pageImagesRef.current = items;
+    setActivePageImages([]);
+    Promise.all(items.map(async (item) => {
+      const file = await loadImportedFile(`image:${activePageKey}:${item.id}`);
+      return file ? { item, file, url: URL.createObjectURL(file) } : null;
+    })).then((loaded) => {
+      if (cancelled) {
+        loaded.forEach((entry) => entry && URL.revokeObjectURL(entry.url));
+        return;
+      }
+      setActivePageImages(loaded.filter((entry): entry is { item: ImageItem; file: File; url: string } => Boolean(entry)));
+    }).catch(() => { if (!cancelled) setActivePageImages([]); });
+    return () => {
+      cancelled = true;
+      setActivePageImages((current) => { current.forEach((entry) => URL.revokeObjectURL(entry.url)); return []; });
+    };
+  }, [activePageKey, activePageImageIds]);
+
   function updateImageLayout(next: Partial<ImageLayout>) {
     if (!activePageKey) return;
     const current = imageLayouts[activePageKey] ?? { x: 0, y: 0, scale: 100 };
     const layout = { ...current, ...next };
+    imageLayoutRef.current = layout;
     setImageLayouts((layouts) => ({ ...layouts, [activePageKey]: layout }));
     setImagePosition({ x: layout.x, y: layout.y });
     setImageScale(layout.scale);
+  }
+
+  function snapshotPageImages() {
+    return pageImagesRef.current.map((item) => ({ ...item, layout: { ...item.layout } }));
+  }
+
+  function commitPageImages(next: ImageItem[], previous = pageImagesRef.current) {
+    if (!activePageKey) return;
+    pageImagesRef.current = next;
+    setPageImages((current) => ({ ...current, [activePageKey]: next }));
+    setPageImageHistory((current) => [...current, previous.map((item) => ({ ...item, layout: { ...item.layout } }))]);
+    setPageImageRedoStack([]);
+    setLastSaved("saving…");
+  }
+
+  function beginPageImageInteraction(event: React.PointerEvent<HTMLDivElement>, id: string, mode: "move" | "resize") {
+    if (tool !== "select") return;
+    const paper = event.currentTarget.closest(".paper-frame") as HTMLElement | null;
+    const item = pageImagesRef.current.find((entry) => entry.id === id);
+    if (!paper || !item) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedPageImageId(id);
+    pageImageDragRef.current = { id, mode, startX: event.clientX, startY: event.clientY, start: { ...item.layout }, paper, pointerId: event.pointerId };
+  }
+
+  function startPageImageHold(id: string) {
+    if (pageImageHoldTimer.current) window.clearTimeout(pageImageHoldTimer.current);
+    pageImageHoldTimer.current = window.setTimeout(() => setPageImageMenuId(id), 550);
+  }
+
+  function clearPageImageHold() {
+    if (pageImageHoldTimer.current) window.clearTimeout(pageImageHoldTimer.current);
+    pageImageHoldTimer.current = null;
+  }
+
+  function movePageImageInteraction(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = pageImageDragRef.current;
+    if (!drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const bounds = drag.paper.getBoundingClientRect();
+    const dx = ((event.clientX - drag.startX) / bounds.width) * 100;
+    const dy = ((event.clientY - drag.startY) / bounds.height) * 100;
+    const next = pageImagesRef.current.map((item) => item.id !== drag.id ? item : { ...item, layout: drag.mode === "resize" ? { ...item.layout, scale: Math.min(300, Math.max(20, drag.start.scale + dx)) } : { ...item.layout, x: Math.min(100, Math.max(-100, drag.start.x + dx)), y: Math.min(100, Math.max(-100, drag.start.y + dy)) } });
+    pageImagesRef.current = next;
+    setPageImages((current) => ({ ...current, [activePageKey]: next }));
+  }
+
+  function endPageImageInteraction(event?: React.PointerEvent<HTMLDivElement>) {
+    const drag = pageImageDragRef.current;
+    if (!drag) return;
+    if (event && event.currentTarget.hasPointerCapture(drag.pointerId)) event.currentTarget.releasePointerCapture(drag.pointerId);
+    const current = pageImagesRef.current.find((item) => item.id === drag.id)?.layout;
+    if (current && (current.x !== drag.start.x || current.y !== drag.start.y || current.scale !== drag.start.scale)) {
+      setPageImageHistory((historyItems) => [...historyItems, pageImagesRef.current.map((item) => item.id === drag.id ? { ...item, layout: { ...drag.start } } : { ...item, layout: { ...item.layout } })]);
+      setPageImageRedoStack([]);
+    }
+    pageImageDragRef.current = null;
+    setLastSaved("saving…");
+  }
+
+  function deletePageImage(id: string) {
+    const item = pageImagesRef.current.find((entry) => entry.id === id);
+    if (!item || !activePageKey || !window.confirm(`Delete imported image “${item.name}”?`)) return;
+    commitPageImages(pageImagesRef.current.filter((entry) => entry.id !== id));
+    void deleteImportedPdf(`image:${activePageKey}:${id}`);
+    setSelectedPageImageId(null);
+    setActivePageImages((current) => current.filter((entry) => entry.item.id !== id));
   }
 
   function beginImageInteraction(event: React.PointerEvent<HTMLDivElement>, mode: "move" | "resize") {
@@ -435,7 +556,7 @@ export default function Home() {
     if (drag && event && event.currentTarget.hasPointerCapture(drag.pointerId)) event.currentTarget.releasePointerCapture(drag.pointerId);
     if (drag && activePageKey) {
       const before = { x: drag.startLeft, y: drag.startTop, scale: drag.startScale };
-      const after = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
+      const after = { ...imageLayoutRef.current };
       if (before.x !== after.x || before.y !== after.y || before.scale !== after.scale) {
         setImageHistory((current) => [...current, before]);
         setImageRedoStack([]);
@@ -536,7 +657,10 @@ export default function Home() {
       return;
     }
     if (tool === "select") {
-      if (selectedStrokeIndexes.length) movingRef.current = { last: point };
+      if (selectedStrokeIndexes.length) {
+        selectionBeforeRef.current = strokesRef.current.map((stroke) => ({ ...stroke, points: stroke.points.map((entry) => ({ ...entry })) }));
+        movingRef.current = { last: point };
+      }
       return;
     }
     if (tool === "eraser") {
@@ -635,19 +759,37 @@ export default function Home() {
       return;
     }
     if (event && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const finishingStroke = drawingStrokeRef.current;
+    if (event && finishingStroke && (tool === "pen" || tool === "highlight" || tool === "line")) {
+      const finalPoint = normalizePoint(event);
+      const lastPoint = finishingStroke.points[finishingStroke.points.length - 1];
+      if (!lastPoint || lastPoint.x !== finalPoint.x || lastPoint.y !== finalPoint.y) {
+        if (tool === "line") finishingStroke.points = [finishingStroke.points[0], finalPoint];
+        else {
+          drawSegment(finishingStroke, finalPoint);
+          finishingStroke.points.push(finalPoint);
+        }
+        strokesRef.current = [...strokesRef.current.slice(0, -1), finishingStroke];
+        setStrokes(strokesRef.current);
+      }
+    }
     if (tool === "lasso" && lassoPoints.length > 2) {
       const selected = strokesRef.current.reduce<number[]>((indexes, stroke, index) => {
         if (stroke.points.some((point) => pointInPolygon(point, lassoPoints))) indexes.push(index);
         return indexes;
       }, []);
+      const imageTarget = pageImagesRef.current.find((item) => pointInPolygon({ x: (item.layout.x / 100) * CANVAS_WIDTH, y: (item.layout.y / 100) * CANVAS_HEIGHT, p: 0.5 }, lassoPoints));
       setSelectedStrokeIndexes(selected);
+      setSelectedPageImageId(imageTarget?.id ?? null);
       setLassoPoints([]);
-      toast(selected.length ? `${selected.length} handwriting mark${selected.length === 1 ? "" : "s"} selected` : "Nothing selected", { description: selected.length ? "Switch to Select and drag the selection." : "Draw around a mark to select it." });
+      setTool("select");
+      toast(selected.length || imageTarget ? `${selected.length + (imageTarget ? 1 : 0)} object${selected.length + (imageTarget ? 1 : 0) === 1 ? "" : "s"} selected` : "Nothing selected", { description: selected.length || imageTarget ? "Drag the selection to move it." : "Draw around a mark or image to select it." });
     }
     if (tool === "select" && movingRef.current) {
-      setHistory((current) => [...current, strokesRef.current]);
+      if (selectionBeforeRef.current) setHistory((current) => [...current, selectionBeforeRef.current!]);
       setRedoStack([]);
       movingRef.current = null;
+      selectionBeforeRef.current = null;
       setLastSaved("saving…");
     }
     setIsDrawing(false);
@@ -657,6 +799,15 @@ export default function Home() {
   }
 
   function undo() {
+    const previousPageImages = pageImageHistory[pageImageHistory.length - 1];
+    if (previousPageImages && activePageKey) {
+      setPageImageRedoStack((current) => [...current, snapshotPageImages()]);
+      setPageImageHistory((current) => current.slice(0, -1));
+      pageImagesRef.current = previousPageImages;
+      setPageImages((current) => ({ ...current, [activePageKey]: previousPageImages }));
+      setSelectedPageImageId(null);
+      return;
+    }
     const previousImage = imageHistory[imageHistory.length - 1];
     if (previousImage && activePageKey) {
       const currentImage = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
@@ -675,6 +826,15 @@ export default function Home() {
   }
 
   function redo() {
+    const nextPageImages = pageImageRedoStack[pageImageRedoStack.length - 1];
+    if (nextPageImages && activePageKey) {
+      setPageImageHistory((current) => [...current, snapshotPageImages()]);
+      setPageImageRedoStack((current) => current.slice(0, -1));
+      pageImagesRef.current = nextPageImages;
+      setPageImages((current) => ({ ...current, [activePageKey]: nextPageImages }));
+      setSelectedPageImageId(null);
+      return;
+    }
     const nextImage = imageRedoStack[imageRedoStack.length - 1];
     if (nextImage && activePageKey) {
       const currentImage = { x: imagePosition.x, y: imagePosition.y, scale: imageScale };
@@ -770,7 +930,8 @@ export default function Home() {
   }
 
   function handleImport(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
+    const file = files[0];
     if (!file) return;
     const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
@@ -780,11 +941,14 @@ export default function Home() {
       return;
     }
     if (isImage && currentView === "editor" && activeNotebook && activeBoard) {
+      const imageFiles = files.filter((entry) => entry.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(entry.name));
       const pageKey = activePageKey;
+      const additions = imageFiles.map((entry) => ({ id: makeId(), name: entry.name, layout: { x: 0, y: 0, scale: 100 } }));
+      const next = [...pageImagesRef.current, ...additions];
+      commitPageImages(next);
       setImagePageKeys((current) => ({ ...current, [pageKey]: true }));
-      setActiveImage(file);
       setActivePdf(null);
-      saveImportedFile(`image:${pageKey}`, file).then(() => toast.success("Image added to this whiteboard", { description: "Your existing handwriting and typed notes were kept." })).catch(() => toast.error("Image could not be saved locally", { description: "You can still use it for this session." }));
+      Promise.all(additions.map((item, index) => saveImportedFile(`image:${pageKey}:${item.id}`, imageFiles[index]))).then(() => toast.success(`${additions.length} image${additions.length === 1 ? "" : "s"} added to this whiteboard`, { description: "Your existing handwriting and images were kept." })).catch(() => toast.error("One or more images could not be saved locally", { description: "You can still use them for this session." }));
       event.target.value = "";
       return;
     }
@@ -1033,7 +1197,7 @@ export default function Home() {
 
   return (
     <div className="app-shell min-h-screen bg-[#f4f1ea] text-[#252628]">
-      <input ref={fileInputRef} type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*" className="hidden" onChange={handleImport} />
+      <input ref={fileInputRef} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*" className="hidden" onChange={handleImport} />
       {showMobileNav && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <button className="absolute inset-0 bg-[#22252a]/40 backdrop-blur-sm" onClick={() => setShowMobileNav(false)} aria-label="Close menu" />
@@ -1093,7 +1257,7 @@ export default function Home() {
                       <ToolButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={() => setZoom((value) => Math.max(75, value - 10))} />
                       <span className="min-w-[39px] text-center text-xs font-bold text-[#6e6c67]">{zoom}%</span>
                       <ToolButton icon={<ZoomIn size={16} />} label="Zoom in" onClick={() => setZoom((value) => Math.min(130, value + 10))} />
-                      {activeImage && <label className="ml-1 flex items-center gap-1.5 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]" title="Resize imported image"><ImageIcon size={14} /><input type="range" min="20" max="300" step="5" value={imageScale} onChange={(event) => updateImageLayout({ scale: Number(event.target.value) })} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Imported image size" /><output>{imageScale}%</output></label>}
+                      {(activeImage || activePageImages.length > 0) && <span className="ml-1 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]"><ImageIcon size={14} className="inline" /> {activePageImages.length || 1} image{(activePageImages.length || 1) === 1 ? "" : "s"}</span>}
                     </div>
                     {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => setNotebooks((current) => current.map((notebook) => {
                       if (notebook.id !== activeNotebook?.id) return notebook;
@@ -1107,11 +1271,16 @@ export default function Home() {
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
                         {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
                       </div>}
+                      {activePageImages.map(({ item, url }) => <div key={item.id} className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${selectedPageImageId === item.id ? "image-layer-selected" : ""}`} style={{ left: `${item.layout.x}%`, top: `${item.layout.y}%`, width: `${item.layout.scale}%` }} onClick={() => tool === "select" && setSelectedPageImageId(item.id)} onPointerDown={(event) => { startPageImageHold(item.id); beginPageImageInteraction(event, item.id, "move"); }} onPointerMove={movePageImageInteraction} onPointerUp={(event) => { clearPageImageHold(); endPageImageInteraction(event); }} onPointerCancel={(event) => { clearPageImageHold(); endPageImageInteraction(event); }}>
+                        <img src={url} alt={`Imported ${item.name}`} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed")} />
+                        {tool === "select" && selectedPageImageId === item.id && <><div className="image-resize-handle" role="slider" aria-label={`Resize ${item.name}`} tabIndex={0} onPointerDown={(event) => { clearPageImageHold(); beginPageImageInteraction(event, item.id, "resize"); }} /><button type="button" className="image-delete-button" onPointerDown={(event) => event.stopPropagation()} onClick={() => deletePageImage(item.id)} aria-label={`Delete ${item.name}`}><Trash2 size={13} /> Delete</button>{pageImageMenuId === item.id && <div className="image-hold-menu">Image selected · choose Delete</div>}</>}
+                      </div>)}
 {activeBoard?.id === "bio-cellular-respiration" ? <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]">
                         <div className="mb-8 flex items-start justify-between"><div><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.22em] text-[#bf6958]">Biology · Unit 04</p><h3 className="font-display text-[clamp(20px,3vw,34px)] leading-none text-[#25344f]">Cellular respiration</h3><p className="mt-3 text-[11px] font-semibold text-[#7a8494]">Tuesday 24 September · Lecture 06</p></div><div className="rounded-lg border border-[#e2b8ab] bg-[#fdf5ed] px-2 py-1 text-[10px] font-bold text-[#c46c5a]">4 / 38</div></div>
                         <div className="space-y-5 text-[clamp(11px,1.4vw,15px)] leading-[1.65]"><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#d8745e]" /><p><strong className="font-bold text-[#2d3b58]">Glycolysis</strong> happens in the cytoplasm — one glucose becomes two pyruvate molecules.</p></div><div className="ml-5 rounded-xl border border-[#dce1e5] bg-[#f7f9f7]/70 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#768698]">Remember</p><p className="font-semibold text-[#31415d]">Net yield: <span className="text-[#ce6b56]">2 ATP</span> + 2 NADH</p></div><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#799882]" /><p><strong className="font-bold text-[#2d3b58]">Krebs cycle</strong> takes place in the mitochondrial matrix. It releases CO₂ and loads electron carriers.</p></div><div className="relative ml-2 mt-8 h-36 rounded-2xl border border-dashed border-[#a8bac0] bg-[#edf4f0]/55"><div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"><div className="mx-auto mb-2 flex h-14 w-20 items-center justify-center rounded-full border-2 border-[#789c8c] text-[10px] font-bold text-[#658574]">MITOCHONDRION</div><div className="h-5 w-px bg-[#789c8c] mx-auto" /><p className="mt-1 text-[9px] font-semibold text-[#789c8c]">inner membrane = ATP synthase</p></div></div><div className="mt-6 flex items-center gap-3 border-t border-[#e6d7cf] pt-4 text-[11px] font-semibold text-[#c46c5a]"><CheckCircle2 size={15} /> Exam connection: compare aerobic vs anaerobic respiration</div></div>
                       </div> : <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]"><div className={`h-full ${tool === "text" ? "pointer-events-auto" : "pointer-events-none"}`}><textarea value={pageText[activePageKey] ?? ""} onChange={(event) => updatePageText(event.target.value)} readOnly={tool !== "text"} placeholder="Tap Text to type, or choose Pen to write by hand…" aria-label="Typed notes for this page" className="h-[66%] w-full resize-none bg-transparent pt-1 text-[clamp(16px,2vw,24px)] leading-[1.45] text-[#39465d] outline-none placeholder:text-[#b9b0a4]" /></div></div>}
-                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative z-20 block h-auto w-full touch-none rounded-[3px] bg-transparent" style={{ pointerEvents: activeImageUrl && tool === "select" ? "none" : "auto" }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
+                      <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative z-20 block h-auto w-full touch-none rounded-[3px] bg-transparent" style={{ pointerEvents: (activeImageUrl || activePageImages.length) && tool === "select" ? "none" : "auto" }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
+                      {tool === "select" && selectedBounds && <div className="lasso-selection-bubble" style={{ left: `${(selectedBounds.left / CANVAS_WIDTH) * 100}%`, top: `${(selectedBounds.top / CANVAS_HEIGHT) * 100}%`, width: `${(selectedBounds.width / CANVAS_WIDTH) * 100}%`, height: `${(selectedBounds.height / CANVAS_HEIGHT) * 100}%` }}><span>Drag to move</span></div>}
                       {tool === "eraser" && eraserCursor && <div aria-hidden="true" className="pointer-events-none absolute z-20 rounded-full border-2 border-[#d66f59] bg-[#d66f59]/10 shadow-[0_0_0_1px_rgba(255,255,255,.8)]" style={{ left: `${(eraserCursor.x / CANVAS_WIDTH) * 100}%`, top: `${(eraserCursor.y / CANVAS_HEIGHT) * 100}%`, width: `${(84 / CANVAS_WIDTH) * 100}%`, aspectRatio: "1", transform: "translate(-50%, -50%)" }} />}
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
