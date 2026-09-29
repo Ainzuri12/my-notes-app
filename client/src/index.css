@@ -657,3 +657,62 @@ html.left-handed .editor-toolbar { order: -1; }
 .selection-context-toolbar { position: absolute; z-index: 35; display: flex; align-items: center; gap: 6px; transform: translateY(-100%); padding: 4px 6px; border: 1px solid #d8c9bd; border-radius: 10px; background: rgba(255,250,245,.96); box-shadow: 0 6px 14px rgba(61,51,42,.14); font-size: 10px; font-weight: 700; color: #6e6c67; white-space: nowrap; }
 .selection-context-toolbar button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: #77736c; }
 .selection-context-toolbar button:hover { background: #f0e5db; color: #c56854; }
+
+/* Continuous Goodnotes-style paper: a large, quiet writing field with the
+   Paperflow warm-paper / navy-ink visual language. */
+main:has(.paper-frame) .paper-workspace {
+  background-color: #dcd4c7 !important;
+  background-image: radial-gradient(rgba(47,69,111,.10) .8px, transparent .8px);
+  background-size: 22px 22px;
+  scrollbar-color: #b9aa9c transparent;
+}
+main:has(.paper-frame) .paper-frame {
+  height: 12000px !important;
+  min-height: 12000px !important;
+  transform-origin: top center !important;
+  border: 1px solid rgba(210, 201, 190, .75);
+  background-color: #fffdf8 !important;
+  box-shadow: 0 12px 32px rgba(61,51,42,.16) !important;
+}
+main:has(.paper-frame) .paper-frame canvas {
+  height: 12000px !important;
+  min-height: 12000px !important;
+}
+.zoom-dock {
+  position: fixed;
+  z-index: 36;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px;
+  border: 1px solid rgba(210,201,190,.95);
+  border-radius: 13px;
+  background: rgba(248,245,239,.94);
+  color: #2f456f;
+  box-shadow: 0 8px 22px rgba(61,51,42,.16);
+  backdrop-filter: blur(16px);
+}
+.zoom-dock button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: #2f456f;
+}
+.zoom-dock button:hover { background: #eee5da; color: #c56854; }
+.zoom-dock .zoom-value { width: 48px; font-size: 11px; font-weight: 800; }
+.zoom-dock-divider { width: 1px; height: 18px; margin: 0 3px; background: #d5cabe; }
+@media (max-width: 700px) {
+  .zoom-dock { left: 12px; bottom: 12px; }
+}
+
+/* Reference-style writing surface: subtle dots instead of a heavy ruled page. */
+main:has(.paper-frame) .paper-frame::before {
+  background-image: radial-gradient(rgba(47,69,111,.14) .85px, transparent .85px) !important;
+  background-size: 22px 22px !important;
+}
+main:has(.paper-frame) .paper-frame::after { display: none !important; }
