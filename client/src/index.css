@@ -743,3 +743,7 @@ main:has(.paper-frame) .paper-frame::after { display: none !important; }
 /* More vertical writing room; at 4% this still presents as a full-page overview. */
 main:has(.paper-frame) .paper-frame { height: 20000px !important; min-height: 20000px !important; }
 main:has(.paper-frame) .paper-frame canvas { height: 20000px !important; min-height: 20000px !important; }
+
+/* Overview is opt-in from the editor menu so it never obstructs handwriting. */
+.canvas-minimap { animation: minimap-in 160ms ease-out; }
+@keyframes minimap-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
