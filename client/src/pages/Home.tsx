@@ -265,6 +265,7 @@ export default function Home() {
   const [selectedColor, setSelectedColor] = useState(() => getStoredSettings().selectedColor);
   const [penSize, setPenSize] = useState(() => getStoredSettings().penSize);
   const [zoom, setZoom] = useState(() => getStoredSettings().zoom);
+  const [workspaceScroll, setWorkspaceScroll] = useState({ top: 0, scrollHeight: 12000, clientHeight: 720 });
   const [showMobileNav, setShowMobileNav] = useState(false);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
@@ -314,6 +315,9 @@ export default function Home() {
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
+  const touchPointersRef = useRef<Record<number, { x: number; y: number }>>({});
+  const pinchRef = useRef<{ startDistance: number; startZoom: number; startCenterX: number; startCenterY: number; startScrollLeft: number; startScrollTop: number; workspace: HTMLElement } | null>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
   const imageDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startLeft: number; startTop: number; startScale: number; paper: HTMLElement; pointerId: number } | null>(null);
   const pageImagesRef = useRef<ImageItem[]>([]);
   const imageLayoutRef = useRef<ImageLayout>({ x: 0, y: 0, scale: 100 });
@@ -669,7 +673,16 @@ export default function Home() {
       if (workspace) {
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
-        touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace };
+        touchPointersRef.current[event.pointerId] = { x: event.clientX, y: event.clientY };
+        const pointers = Object.values(touchPointersRef.current);
+        if (pointers.length >= 2) {
+          const [first, second] = pointers;
+          const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+          pinchRef.current = { startDistance: distance, startZoom: zoom, startCenterX: (first.x + second.x) / 2, startCenterY: (first.y + second.y) / 2, startScrollLeft: workspace.scrollLeft, startScrollTop: workspace.scrollTop, workspace };
+          touchPanRef.current = null;
+        } else {
+          touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace };
+        }
       }
       return;
     }
@@ -714,14 +727,32 @@ export default function Home() {
 
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>) {
     if (tool === "eraser" && event.pointerType !== "touch") setEraserCursor(normalizePoint(event));
-    if (event.pointerType === "touch" && touchPanRef.current) {
-      event.preventDefault();
-      const pan = touchPanRef.current;
-      pan.workspace.scrollLeft -= event.clientX - pan.lastX;
-      pan.workspace.scrollTop -= event.clientY - pan.lastY;
-      pan.lastX = event.clientX;
-      pan.lastY = event.clientY;
-      return;
+    if (event.pointerType === "touch") {
+      const pointer = touchPointersRef.current[event.pointerId];
+      if (pointer) { pointer.x = event.clientX; pointer.y = event.clientY; }
+      const pointers = Object.values(touchPointersRef.current);
+      if (pinchRef.current && pointers.length >= 2) {
+        event.preventDefault();
+        const [first, second] = pointers;
+        const pinch = pinchRef.current;
+        const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+        const centerX = (first.x + second.x) / 2;
+        const centerY = (first.y + second.y) / 2;
+        const nextZoom = Math.min(200, Math.max(25, pinch.startZoom * (distance / pinch.startDistance)));
+        pinch.workspace.scrollLeft = Math.max(0, pinch.startScrollLeft - (centerX - pinch.startCenterX));
+        pinch.workspace.scrollTop = Math.max(0, pinch.startScrollTop - (centerY - pinch.startCenterY));
+        setZoom(Math.round(nextZoom));
+        return;
+      }
+      if (touchPanRef.current) {
+        event.preventDefault();
+        const pan = touchPanRef.current;
+        pan.workspace.scrollLeft -= event.clientX - pan.lastX;
+        pan.workspace.scrollTop -= event.clientY - pan.lastY;
+        pan.lastX = event.clientX;
+        pan.lastY = event.clientY;
+        return;
+      }
     }
     if (!isDrawing) return;
     const point = normalizePoint(event);
@@ -784,8 +815,11 @@ export default function Home() {
     if (event?.pointerType !== "touch") setEraserCursor(null);
     eraserPointRef.current = null;
     if (event?.pointerType === "touch") {
+      delete touchPointersRef.current[event.pointerId];
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-      touchPanRef.current = null;
+      const remaining = Object.values(touchPointersRef.current);
+      pinchRef.current = null;
+      touchPanRef.current = remaining.length === 1 ? { lastX: remaining[0].x, lastY: remaining[0].y, workspace: workspaceRef.current! } : null;
       return;
     }
     if (event && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -1312,12 +1346,20 @@ export default function Home() {
                   <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
                 <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
-                  <div className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel}>
+                  <div ref={workspaceRef} className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel} onScroll={(event) => { const element = event.currentTarget; setWorkspaceScroll({ top: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }); }}>
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
                       <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length && !imageHistory.length} onClick={undo} />
                       <ToolButton icon={<Redo2 size={16} />} label="Redo" disabled={!redoStack.length && !imageRedoStack.length} onClick={redo} />
                       <span className="mx-1 h-5 w-px bg-[#cfc4b5]" />
                       {(activeImage || activePageImages.length > 0) && <span className="ml-1 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]"><ImageIcon size={14} className="inline" /> {activePageImages.length || 1} image{(activePageImages.length || 1) === 1 ? "" : "s"}</span>}
+                    </div>
+                    <div className="canvas-minimap" aria-label="Canvas overview navigation">
+                      <div className="minimap-label"><span>Overview</span><span>{Math.round(zoom)}%</span></div>
+                      <button className="minimap-track" aria-label="Jump to canvas position" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const fraction = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)); const workspace = workspaceRef.current; if (workspace) workspace.scrollTo({ top: fraction * Math.max(0, workspace.scrollHeight - workspace.clientHeight), behavior: "smooth" }); }}>
+                        <span className="minimap-paper" />
+                        <span className="minimap-viewport" style={{ top: `${Math.min(100, Math.max(0, (workspaceScroll.top / Math.max(1, workspaceScroll.scrollHeight - workspaceScroll.clientHeight)) * 100))}%`, height: `${Math.min(88, Math.max(18, (workspaceScroll.clientHeight / Math.max(1, workspaceScroll.scrollHeight)) * 150))}px` }} />
+                      </button>
+                      <span className="minimap-hint">Tap to jump · drag canvas to pan</span>
                     </div>
                     <div className="zoom-dock" aria-label="Canvas zoom controls">
                       <button onClick={() => setZoom((value) => Math.max(25, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
