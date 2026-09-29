@@ -1368,7 +1368,7 @@ export default function Home() {
                     </div>}
                     <div className="zoom-dock" aria-label="Canvas zoom controls">
                       <button onClick={() => setZoom((value) => Math.max(4, value - 5))} aria-label="Zoom out" title="Zoom out"><ZoomOut size={15} /></button>
-                      <button className="zoom-value" onClick={resetZoom} aria-label="Reset zoom to 100 percent" title="Reset zoom">{zoom}%</button>
+                      <button className="zoom-value" onClick={resetZoom} aria-label="Reset zoom to 100 percent" title="Reset zoom">{Math.round(zoom)}%</button>
                       <button onClick={() => setZoom((value) => Math.min(200, value + 5))} aria-label="Zoom in" title="Zoom in"><ZoomIn size={15} /></button>
                       <span className="zoom-dock-divider" />
                       <button onClick={fitZoom} aria-label="Fit canvas" title="Fit canvas"><Maximize2 size={14} /></button>
@@ -1380,7 +1380,7 @@ export default function Home() {
                     }))} onPageChange={(pageNumber) => {
                       const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
                       if (targetBoard) setActiveBoardId(targetBoard.id);
-                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
+                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", width: "2200px", maxWidth: "none", height: `${CANVAS_HEIGHT}px`, minHeight: `${CANVAS_HEIGHT}px`, transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
                         {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
