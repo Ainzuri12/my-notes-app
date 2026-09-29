@@ -753,3 +753,14 @@ main:has(.paper-frame) .paper-frame canvas { height: 20000px !important; min-hei
 main:has(.paper-frame) .paper-workspace { touch-action: none !important; }
 main:has(.paper-frame) .paper-frame,
 main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
+
+/* The logical canvas remains 1200 units wide so existing strokes keep their
+   coordinates. Give the infinite paper a wider display surface so low zoom
+   shows a usable workspace instead of a narrow 1200x20000 strip. */
+main:has(.paper-frame) .paper-frame {
+  width: 2200px !important;
+  max-width: none !important;
+}
+main:has(.paper-frame) .paper-frame canvas {
+  width: 100% !important;
+}
