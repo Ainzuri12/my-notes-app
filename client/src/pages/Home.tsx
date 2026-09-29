@@ -743,7 +743,7 @@ export default function Home() {
         const nextZoom = Math.min(200, Math.max(4, pinch.startZoom * (distance / pinch.startDistance)));
         pinch.workspace.scrollLeft = Math.max(0, pinch.startScrollLeft - (centerX - pinch.startCenterX));
         pinch.workspace.scrollTop = Math.max(0, pinch.startScrollTop - (centerY - pinch.startCenterY));
-        setZoom(Math.round(nextZoom));
+        setZoom(nextZoom);
         return;
       }
       if (touchPanRef.current) {
@@ -886,10 +886,13 @@ export default function Home() {
   function resetZoom() { setZoom(100); }
   function fitZoom() { setZoom(75); }
   function handleWorkspaceWheel(event: React.WheelEvent<HTMLDivElement>) {
+    // Trackpad pinch is exposed by browsers as a wheel event with ctrl/meta.
+    // Use a multiplicative curve so tiny trackpad deltas feel smooth at every zoom level.
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
-    setZoom((value) => Math.min(200, Math.max(4, value + direction * 5)));
+    const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
+    const factor = Math.exp(-delta * 0.012);
+    setZoom((value) => Math.min(200, Math.max(4, value * factor)));
   }
   function undo() {
     const previousPageImages = pageImageHistory[pageImageHistory.length - 1];
