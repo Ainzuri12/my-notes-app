@@ -39,7 +39,6 @@ import {
   Redo2,
   Search,
   Settings2,
-  SlidersHorizontal,
   Sparkles,
   Tablet,
   Trash2,
@@ -49,6 +48,17 @@ import {
   X,
   ZoomIn,
   ZoomOut,
+  Copy,
+  Maximize2,
+  RotateCw,
+  SlidersHorizontal,
+  Sun,
+  Moon,
+  Contrast,
+  Type,
+  MoveHorizontal,
+  Save,
+  CheckCircle,
 } from "lucide-react";
 
 type Tool = "select" | "pen" | "highlight" | "eraser" | "lasso" | "line" | "text";
@@ -78,6 +88,10 @@ const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
 const IMAGE_ITEMS_STORAGE_KEY = "paperflow-image-items";
 
 type DrawingSettings = { selectedColor: string; penSize: number; zoom: number };
+type DisplayPreferences = { theme: "light" | "dark" | "contrast"; largeText: boolean; reducedMotion: boolean; compactToolbar: boolean; leftHanded: boolean };
+type ImportStatus = { name: string; progress: number; message: string; error?: boolean };
+const DISPLAY_PREFS_KEY = "paperflow-display-preferences";
+const defaultDisplayPreferences: DisplayPreferences = { theme: "light", largeText: false, reducedMotion: false, compactToolbar: false, leftHanded: false };
 type ImageLayout = { x: number; y: number; scale: number };
 type ImageItem = { id: string; name: string; layout: ImageLayout };
 type PageTemplate = { id: string; name: string; description: string; icon: string; preview: string; color: string };
@@ -278,6 +292,12 @@ export default function Home() {
   const [lassoPoints, setLassoPoints] = useState<Point[]>([]);
   const [selectedStrokeIndexes, setSelectedStrokeIndexes] = useState<number[]>([]);
   const [lastSaved, setLastSaved] = useState("just now");
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "offline">("saved");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [displayPreferences, setDisplayPreferences] = useState<DisplayPreferences>(() => readStored(DISPLAY_PREFS_KEY, defaultDisplayPreferences));
+  const [sortOrder, setSortOrder] = useState<"recent" | "name" | "pages">("recent");
+  const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [boardCreatorOpen, setBoardCreatorOpen] = useState(false);
   const [boardCreatorNotebookId, setBoardCreatorNotebookId] = useState<string | null>(null);
@@ -305,8 +325,8 @@ export default function Home() {
   const activeBoard = activeBoardIndex >= 0 ? activeNotebook?.boards[activeBoardIndex] : activeNotebook?.boards[0];
   const activePageKey = activeNotebook && activeBoard ? `${activeNotebook.id}:${activeBoard.id}` : "";
   const filteredNotebooks = notebooks.filter((notebook) =>
-    `${notebook.title} ${notebook.subtitle}`.toLowerCase().includes(search.toLowerCase()),
-  );
+    `${notebook.title} ${notebook.subtitle} ${notebook.boards.map((board) => board.title).join(" ")}`.toLowerCase().includes(search.toLowerCase()),
+  ).sort((a, b) => sortOrder === "name" ? a.title.localeCompare(b.title) : sortOrder === "pages" ? b.boards.length - a.boards.length : 0);
   const selectedBounds = getStrokeBounds(strokes, selectedStrokeIndexes);
   const activePageImageIds = activePageKey ? (pageImages[activePageKey] ?? []).map((item) => item.id).join(",") : "";
 
@@ -317,7 +337,8 @@ export default function Home() {
       strokePagesRef.current[pageKeyRef.current] = strokes;
       writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
     }
-    const timer = window.setTimeout(() => setLastSaved("just now"), 250);
+    setSaveState("saving");
+    const timer = window.setTimeout(() => { setLastSaved("just now"); setSaveState("saved"); }, 450);
     return () => window.clearTimeout(timer);
   }, [strokes]);
 
@@ -348,6 +369,7 @@ export default function Home() {
     setPageText(next);
     writeStored("paperflow-page-text", next);
     setLastSaved("saving…");
+    setSaveState("saving");
   }
 
   useEffect(() => {
@@ -387,6 +409,14 @@ export default function Home() {
   useEffect(() => {
     writeStored(SETTINGS_STORAGE_KEY, { selectedColor, penSize, zoom } satisfies DrawingSettings);
   }, [selectedColor, penSize, zoom]);
+  useEffect(() => {
+    writeStored(DISPLAY_PREFS_KEY, displayPreferences);
+    document.documentElement.dataset.displayTheme = displayPreferences.theme;
+    document.documentElement.classList.toggle("large-text", displayPreferences.largeText);
+    document.documentElement.classList.toggle("reduce-motion", displayPreferences.reducedMotion);
+    document.documentElement.classList.toggle("compact-toolbar", displayPreferences.compactToolbar);
+    document.documentElement.classList.toggle("left-handed", displayPreferences.leftHanded);
+  }, [displayPreferences]);
   useEffect(() => {
     let cancelled = false;
     const isImportedNotebook = activeNotebook?.subtitle.includes("Imported PDF") || activeNotebook?.subtitle.includes("Imported image");
@@ -798,6 +828,27 @@ export default function Home() {
     window.setTimeout(() => setLastSaved("just now"), 450);
   }
 
+  function deleteSelectedStrokes() {
+    if (!selectedStrokeIndexes.length) return;
+    const indexes = new Set(selectedStrokeIndexes);
+    setHistory((current) => [...current, strokesRef.current]);
+    const next = strokesRef.current.filter((_, index) => !indexes.has(index));
+    strokesRef.current = next;
+    setStrokes(next);
+    setSelectedStrokeIndexes([]);
+    setLastSaved("saving…");
+  }
+  function duplicateSelectedStrokes() {
+    if (!selectedStrokeIndexes.length) return;
+    const copies = selectedStrokeIndexes.map((index) => strokesRef.current[index]).filter(Boolean).map((stroke) => ({ ...stroke, points: stroke.points.map((point) => ({ ...point, x: point.x + 32, y: point.y + 32 })) }));
+    setHistory((current) => [...current, strokesRef.current]);
+    const next = [...strokesRef.current, ...copies];
+    strokesRef.current = next;
+    setStrokes(next);
+    setLastSaved("saving…");
+  }
+  function resetZoom() { setZoom(100); }
+  function fitZoom() { setZoom(85); }
   function undo() {
     const previousPageImages = pageImageHistory[pageImageHistory.length - 1];
     if (previousPageImages && activePageKey) {
@@ -933,10 +984,12 @@ export default function Home() {
     const files = Array.from(event.target.files ?? []);
     const file = files[0];
     if (!file) return;
+    setImportStatus({ name: file.name, progress: 15, message: "Checking file…" });
     const isImage = file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name);
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
     const isSupported = isPdf || isImage;
     if (!isSupported) {
+      setImportStatus({ name: file.name, progress: 100, message: "Unsupported file type", error: true });
       toast.error("That file type is not supported", { description: "Import a PDF, PNG, JPG, WEBP, or GIF file." });
       return;
     }
@@ -948,8 +1001,10 @@ export default function Home() {
       commitPageImages(next);
       setImagePageKeys((current) => ({ ...current, [pageKey]: true }));
       setActivePdf(null);
-      Promise.all(additions.map((item, index) => saveImportedFile(`image:${pageKey}:${item.id}`, imageFiles[index]))).then(() => toast.success(`${additions.length} image${additions.length === 1 ? "" : "s"} added to this whiteboard`, { description: "Your existing handwriting and images were kept." })).catch(() => toast.error("One or more images could not be saved locally", { description: "You can still use them for this session." }));
+      setImportStatus({ name: imageFiles.length > 1 ? `${imageFiles.length} images` : file.name, progress: 55, message: "Saving locally…" });
+      Promise.all(additions.map((item, index) => saveImportedFile(`image:${pageKey}:${item.id}`, imageFiles[index]))).then(() => { setImportStatus({ name: imageFiles.length > 1 ? `${imageFiles.length} images` : file.name, progress: 100, message: "Added to page" }); toast.success(`${additions.length} image${additions.length === 1 ? "" : "s"} added to this whiteboard`, { description: "Your existing handwriting and images were kept." }); }).catch(() => toast.error("One or more images could not be saved locally", { description: "You can still use them for this session." }));
       event.target.value = "";
+      window.setTimeout(() => setImportStatus(null), 2600);
       return;
     }
     const importedPageCount = isPdf ? 12 : 1;
@@ -966,7 +1021,8 @@ export default function Home() {
     setNotebooks((current) => [imported, ...current]);
     setActivePdf(isPdf ? file : null);
     setActiveImage(isImage ? file : null);
-    saveImportedFile(imported.id, file).then(() => toast.success("File saved for offline use", { description: "This import will be available after you reload Paperflow." })).catch(() => toast.error("File could not be saved locally", { description: "You can still annotate it for this session." }));
+    setImportStatus({ name: file.name, progress: 55, message: "Saving locally…" });
+    saveImportedFile(imported.id, file).then(() => { setImportStatus({ name: file.name, progress: 100, message: "Added to library" }); toast.success("File saved for offline use", { description: "This import will be available after you reload Paperflow." }); }).catch(() => toast.error("File could not be saved locally", { description: "You can still annotate it for this session." }));
     setSelectedNotebook(imported.id);
     setActiveBoardId(imported.boards[0].id);
     setCurrentView("editor");
@@ -1187,6 +1243,7 @@ export default function Home() {
       setCurrentView("library");
       return;
     }
+    if (label === "Settings") { setSettingsOpen(true); return; }
     if (label === "Templates") {
       setCurrentView("templates");
       setSelectedNotebookIds([]);
@@ -1196,7 +1253,7 @@ export default function Home() {
   }
 
   return (
-    <div className="app-shell min-h-screen bg-[#f4f1ea] text-[#252628]">
+    <div className={`app-shell min-h-screen bg-[#f4f1ea] text-[#252628] ${displayPreferences.leftHanded ? "is-left-handed" : ""}`}>
       <input ref={fileInputRef} type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.webp,.gif,application/pdf,image/*" className="hidden" onChange={handleImport} />
       {showMobileNav && (
         <div className="fixed inset-0 z-50 lg:hidden">
@@ -1233,10 +1290,10 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              <div className="hidden items-center gap-2 text-xs font-semibold text-[#888983] md:flex"><Cloud size={15} className="text-[#6b9a7c]" /> Saved locally · {lastSaved}</div>
-              <button onClick={() => showComingSoon("Search")} className="rounded-xl p-2.5 text-[#777976] transition hover:bg-[#e8e4db] hover:text-[#272829]" aria-label="Search"><Search size={19} /></button>
+              <div className="hidden items-center gap-2 text-xs font-semibold text-[#888983] md:flex"><Cloud size={15} className={saveState === "saving" ? "text-[#d69a53]" : "text-[#6b9a7c]"} /> {saveState === "saving" ? "Saving…" : saveState === "offline" ? "Offline — saved locally" : `Saved ${lastSaved}`}</div>
+              <button onClick={() => setSearchOpen(true)} className="rounded-xl p-2.5 text-[#777976] transition hover:bg-[#e8e4db] hover:text-[#272829]" aria-label="Search"><Search size={19} /></button>
               <button onClick={() => fileInputRef.current?.click()} className="hidden items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2.5 text-sm font-semibold text-white shadow-[0_5px_14px_rgba(37,40,44,0.16)] transition hover:-translate-y-0.5 hover:bg-[#3b3e42] sm:flex"><FileUp size={16} /> Import</button>
-              <button onClick={() => showComingSoon("Account settings")} className="flex h-9 w-9 items-center justify-center rounded-full bg-[#d8a59a] text-sm font-bold text-[#543d3b] ring-4 ring-[#ece7de]">JD</button>
+              <button onClick={() => setSettingsOpen(true)} className="flex h-9 w-9 items-center justify-center rounded-full bg-[#d8a59a] text-sm font-bold text-[#543d3b] ring-4 ring-[#ece7de]">JD</button>
             </div>
           </header>
 
@@ -1256,7 +1313,7 @@ export default function Home() {
                       <span className="mx-1 h-5 w-px bg-[#cfc4b5]" />
                       <ToolButton icon={<ZoomOut size={16} />} label="Zoom out" onClick={() => setZoom((value) => Math.max(75, value - 10))} />
                       <span className="min-w-[39px] text-center text-xs font-bold text-[#6e6c67]">{zoom}%</span>
-                      <ToolButton icon={<ZoomIn size={16} />} label="Zoom in" onClick={() => setZoom((value) => Math.min(130, value + 10))} />
+                      <ToolButton icon={<ZoomIn size={16} />} label="Zoom in" onClick={() => setZoom((value) => Math.min(130, value + 10))} /><ToolButton icon={<Maximize2 size={16} />} label="Fit page" onClick={fitZoom} /><button onClick={resetZoom} className="rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67] hover:bg-[#e1d8cb]" aria-label="Reset zoom to 100 percent">100%</button>
                       {(activeImage || activePageImages.length > 0) && <span className="ml-1 rounded-lg px-1.5 text-[10px] font-bold text-[#6e6c67]"><ImageIcon size={14} className="inline" /> {activePageImages.length || 1} image{(activePageImages.length || 1) === 1 ? "" : "s"}</span>}
                     </div>
                     {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => setNotebooks((current) => current.map((notebook) => {
@@ -1280,7 +1337,7 @@ export default function Home() {
                         <div className="space-y-5 text-[clamp(11px,1.4vw,15px)] leading-[1.65]"><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#d8745e]" /><p><strong className="font-bold text-[#2d3b58]">Glycolysis</strong> happens in the cytoplasm — one glucose becomes two pyruvate molecules.</p></div><div className="ml-5 rounded-xl border border-[#dce1e5] bg-[#f7f9f7]/70 p-4"><p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-[#768698]">Remember</p><p className="font-semibold text-[#31415d]">Net yield: <span className="text-[#ce6b56]">2 ATP</span> + 2 NADH</p></div><div className="flex gap-3"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-[#799882]" /><p><strong className="font-bold text-[#2d3b58]">Krebs cycle</strong> takes place in the mitochondrial matrix. It releases CO₂ and loads electron carriers.</p></div><div className="relative ml-2 mt-8 h-36 rounded-2xl border border-dashed border-[#a8bac0] bg-[#edf4f0]/55"><div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-center"><div className="mx-auto mb-2 flex h-14 w-20 items-center justify-center rounded-full border-2 border-[#789c8c] text-[10px] font-bold text-[#658574]">MITOCHONDRION</div><div className="h-5 w-px bg-[#789c8c] mx-auto" /><p className="mt-1 text-[9px] font-semibold text-[#789c8c]">inner membrane = ATP synthase</p></div></div><div className="mt-6 flex items-center gap-3 border-t border-[#e6d7cf] pt-4 text-[11px] font-semibold text-[#c46c5a]"><CheckCircle2 size={15} /> Exam connection: compare aerobic vs anaerobic respiration</div></div>
                       </div> : <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[13%] py-[12%] text-[#39465d]"><div className={`h-full ${tool === "text" ? "pointer-events-auto" : "pointer-events-none"}`}><textarea value={pageText[activePageKey] ?? ""} onChange={(event) => updatePageText(event.target.value)} readOnly={tool !== "text"} placeholder="Tap Text to type, or choose Pen to write by hand…" aria-label="Typed notes for this page" className="h-[66%] w-full resize-none bg-transparent pt-1 text-[clamp(16px,2vw,24px)] leading-[1.45] text-[#39465d] outline-none placeholder:text-[#b9b0a4]" /></div></div>}
                       <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="relative z-20 block h-auto w-full touch-none rounded-[3px] bg-transparent" style={{ pointerEvents: (activeImageUrl || activePageImages.length) && tool === "select" ? "none" : "auto" }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting canvas" onContextMenu={(event) => event.preventDefault()} />
-                      {tool === "select" && selectedBounds && <div className="lasso-selection-bubble" style={{ left: `${(selectedBounds.left / CANVAS_WIDTH) * 100}%`, top: `${(selectedBounds.top / CANVAS_HEIGHT) * 100}%`, width: `${(selectedBounds.width / CANVAS_WIDTH) * 100}%`, height: `${(selectedBounds.height / CANVAS_HEIGHT) * 100}%` }}><span>Drag to move</span></div>}
+                      {tool === "select" && selectedBounds && <><div className="selection-context-toolbar" style={{ left: `${(selectedBounds.left / CANVAS_WIDTH) * 100}%`, top: `${Math.max(0, (selectedBounds.top / CANVAS_HEIGHT) * 100 - 4)}%` }}><span>{selectedStrokeIndexes.length} stroke{selectedStrokeIndexes.length === 1 ? "" : "s"} selected</span><button onClick={duplicateSelectedStrokes} aria-label="Duplicate selection"><Copy size={13} /></button><button onClick={deleteSelectedStrokes} aria-label="Delete selection"><Trash2 size={13} /></button></div><div className="selection-handles" style={{ left: `${(selectedBounds.left / CANVAS_WIDTH) * 100}%`, top: `${(selectedBounds.top / CANVAS_HEIGHT) * 100}%`, width: `${(selectedBounds.width / CANVAS_WIDTH) * 100}%`, height: `${(selectedBounds.height / CANVAS_HEIGHT) * 100}%` }}><i /><i /><i /><i /></div><div className="lasso-selection-bubble" style={{ left: `${(selectedBounds.left / CANVAS_WIDTH) * 100}%`, top: `${(selectedBounds.top / CANVAS_HEIGHT) * 100}%`, width: `${(selectedBounds.width / CANVAS_WIDTH) * 100}%`, height: `${(selectedBounds.height / CANVAS_HEIGHT) * 100}%` }}><span>Drag to move</span></div></>}
                       {tool === "eraser" && eraserCursor && <div aria-hidden="true" className="pointer-events-none absolute z-20 rounded-full border-2 border-[#d66f59] bg-[#d66f59]/10 shadow-[0_0_0_1px_rgba(255,255,255,.8)]" style={{ left: `${(eraserCursor.x / CANVAS_WIDTH) * 100}%`, top: `${(eraserCursor.y / CANVAS_HEIGHT) * 100}%`, width: `${(84 / CANVAS_WIDTH) * 100}%`, aspectRatio: "1", transform: "translate(-50%, -50%)" }} />}
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
@@ -1316,7 +1373,7 @@ export default function Home() {
             </section>
 
             <section className="rounded-[22px] border border-[#ded8cd] bg-[#f9f6f0] p-4 sm:p-5">
-              <div className="mb-4 flex items-center justify-between gap-3"><div><div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#88847b]"><Folder size={14} className="text-[#c66d59]" /> Organize</div><p className="mt-1 text-sm text-[#8a8982]">Drag notebooks or past papers into a folder.</p></div><button onClick={createFolder} className="flex items-center gap-2 rounded-lg border border-[#d8d0c4] bg-[#fffaf5] px-3 py-2 text-xs font-bold text-[#67675f] transition hover:border-[#d49483] hover:text-[#bf6551]"><Plus size={14} /> New folder</button></div>
+              <div className="mb-4 flex items-center justify-between gap-3"><div><div className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#88847b]"><Folder size={14} className="text-[#c66d59]" /> Organize</div><p className="mt-1 text-sm text-[#8a8982]">Drag notebooks or past papers into a folder. <span className="font-semibold text-[#c56854]">Long-press for actions.</span></p></div><button onClick={createFolder} className="flex items-center gap-2 rounded-lg border border-[#d8d0c4] bg-[#fffaf5] px-3 py-2 text-xs font-bold text-[#67675f] transition hover:border-[#d49483] hover:text-[#bf6551]"><Plus size={14} /> New folder</button></div>
               <div className="flex gap-3 overflow-x-auto pb-1">
                 {folders.filter((folder) => !folder.parentId || !collapsedFolderIds.includes(folder.parentId)).map((folder) => <FolderCard key={folder.id} folder={folder} notebookCount={notebooks.filter((notebook) => notebook.folderId === folder.id).length} active={activeFolder === folder.id} hasChildren={folders.some((child) => child.parentId === folder.id)} collapsed={collapsedFolderIds.includes(folder.id)} onDragStart={handleFolderDragStart} onDrop={handleFolderDrop} onToggle={() => setActiveFolder(activeFolder === folder.id ? null : folder.id)} onToggleCollapse={() => setCollapsedFolderIds((current) => current.includes(folder.id) ? current.filter((id) => id !== folder.id) : [...current, folder.id])} onRename={() => renameFolder(folder.id)} onCreateSubfolder={() => createSubfolder(folder.id)} onDelete={() => deleteFolder(folder.id)} />)}
               </div>
@@ -1325,7 +1382,7 @@ export default function Home() {
             <section>
               <div className="mb-5 flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
                 <div><h2 className="font-display text-2xl tracking-[-0.03em]">Your notebooks</h2><p className="mt-1 text-sm text-[#8a8a85]">Pick up where you left off.</p></div>
-                <div className="flex flex-wrap items-center gap-2"><button onClick={selectAllVisible} className="rounded-lg border border-[#ddd6cb] bg-[#faf7f1] px-3 py-2 text-xs font-bold text-[#76766f] transition hover:border-[#d49a8b]">{selectedNotebookIds.length === filteredNotebooks.length && filteredNotebooks.length ? "Clear selection" : "Select all"}</button>{selectedNotebookIds.length > 0 && <><select defaultValue="" onChange={(event) => { if (event.target.value) moveSelectedNotebooks(event.target.value === "root" ? null : event.target.value); }} className="rounded-lg border border-[#ddd6cb] bg-[#faf7f1] px-3 py-2 text-xs font-bold text-[#76766f] outline-none"><option value="">Move selected to…</option><option value="root">No folder</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.parentId ? "↳ " : ""}{folder.name}</option>)}</select><button onClick={deleteSelectedNotebooks} className="flex items-center gap-1.5 rounded-lg border border-[#edc9c0] bg-[#fff4f0] px-3 py-2 text-xs font-bold text-[#bf6551] transition hover:bg-[#fee9e2]"><Trash2 size={14} /> Trash {selectedNotebookIds.length}</button></>}<button onClick={() => showComingSoon("Notebook sorting")} className="hidden items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-semibold text-[#7d7d77] hover:bg-[#e9e5dc] sm:flex"><SlidersHorizontal size={15} /> Recently edited <ChevronDown size={14} /></button></div>
+                <div className="flex flex-wrap items-center gap-2"><button onClick={selectAllVisible} className="rounded-lg border border-[#ddd6cb] bg-[#faf7f1] px-3 py-2 text-xs font-bold text-[#76766f] transition hover:border-[#d49a8b]">{selectedNotebookIds.length === filteredNotebooks.length && filteredNotebooks.length ? "Clear selection" : "Select all"}</button>{selectedNotebookIds.length > 0 && <><select defaultValue="" onChange={(event) => { if (event.target.value) moveSelectedNotebooks(event.target.value === "root" ? null : event.target.value); }} className="rounded-lg border border-[#ddd6cb] bg-[#faf7f1] px-3 py-2 text-xs font-bold text-[#76766f] outline-none"><option value="">Move selected to…</option><option value="root">No folder</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.parentId ? "↳ " : ""}{folder.name}</option>)}</select><button onClick={deleteSelectedNotebooks} className="flex items-center gap-1.5 rounded-lg border border-[#edc9c0] bg-[#fff4f0] px-3 py-2 text-xs font-bold text-[#bf6551] transition hover:bg-[#fee9e2]"><Trash2 size={14} /> Trash {selectedNotebookIds.length}</button></>}<label className="hidden items-center gap-2 rounded-lg px-2 py-1.5 text-sm font-semibold text-[#7d7d77] sm:flex"><SlidersHorizontal size={15} /><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as typeof sortOrder)} className="bg-transparent outline-none"><option value="recent">Recently edited</option><option value="name">Name</option><option value="pages">Page count</option></select></label></div>
               </div>
               <div className={viewMode === "grid" ? "grid gap-5 md:grid-cols-2 xl:grid-cols-3" : "space-y-3"}>
                 {filteredNotebooks.map((notebook, index) => (
@@ -1340,6 +1397,9 @@ export default function Home() {
           </div>
           )}
         </main>
+        {importStatus && <ImportStatusToast status={importStatus} onDismiss={() => setImportStatus(null)} />}
+        {settingsOpen && <SettingsPanel preferences={displayPreferences} onChange={setDisplayPreferences} onClose={() => setSettingsOpen(false)} />}
+        {searchOpen && <SearchPanel query={search} onQueryChange={setSearch} notebooks={notebooks} onClose={() => setSearchOpen(false)} onOpen={(notebook) => { openNotebook(notebook); setSearchOpen(false); }} />}
         {boardCreatorOpen && <BoardCreator templateId={boardCreatorTemplateId} count={boardCreatorCount} color={boardCreatorColor} onTemplateChange={(id) => { setBoardCreatorTemplateId(id); const template = pageTemplates.find((item) => item.id === id); if (template) setBoardCreatorColor(template.color); }} onCountChange={setBoardCreatorCount} onColorChange={setBoardCreatorColor} onCancel={() => setBoardCreatorOpen(false)} onCreate={createWhiteboards} />}
       </div>
     </div>
@@ -1514,6 +1574,22 @@ function ToolButton({ icon, label, onClick, disabled }: { icon: React.ReactNode;
 
 function ColorDot({ color, active, onClick }: { color: string; active: boolean; onClick: () => void }) {
   return <button onClick={onClick} className={`flex h-7 w-7 items-center justify-center rounded-full transition ${active ? "ring-2 ring-[#c8705d] ring-offset-2 ring-offset-[#f4efe7]" : "hover:scale-110"}`} style={{ backgroundColor: color }} aria-label={`Choose ${color}`}><span className="sr-only">{color}</span></button>;
+}
+
+function ImportStatusToast({ status, onDismiss }: { status: ImportStatus; onDismiss: () => void }) {
+  return <div className={`fixed bottom-5 right-5 z-[80] w-[min(360px,calc(100vw-32px))] rounded-2xl border p-4 shadow-[0_18px_50px_rgba(61,51,42,0.2)] ${status.error ? "border-[#e4b7ad] bg-[#fff3ef]" : "border-[#cfe0d2] bg-[#f5fbf4]"}`} role="status" aria-live="polite">
+    <div className="flex items-start gap-3"><span className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${status.error ? "bg-[#f3d2ca] text-[#b75b4d]" : "bg-[#dcecdf] text-[#5f8668]"}`}>{status.error ? <X size={16} /> : status.progress === 100 ? <CheckCircle size={16} /> : <UploadCloud size={16} />}</span><div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-bold text-[#454640]">{status.name}</p><button onClick={onDismiss} className="rounded-md p-1 text-[#99968e] hover:bg-black/5" aria-label="Dismiss import status"><X size={14} /></button></div><p className="mt-1 text-xs text-[#777870]">{status.message}</p><div className="mt-3 h-1.5 overflow-hidden rounded-full bg-black/10"><div className={`h-full rounded-full transition-all ${status.error ? "bg-[#c75f4e]" : "bg-[#6f9c78]"}`} style={{ width: `${status.progress}%` }} /></div></div></div>
+  </div>;
+}
+
+function SearchPanel({ query, onQueryChange, notebooks, onClose, onOpen }: { query: string; onQueryChange: (value: string) => void; notebooks: Notebook[]; onClose: () => void; onOpen: (notebook: Notebook) => void }) {
+  const results = notebooks.filter((notebook) => `${notebook.title} ${notebook.subtitle} ${notebook.boards.map((board) => board.title).join(" ")}`.toLowerCase().includes(query.toLowerCase())).slice(0, 12);
+  return <div className="fixed inset-0 z-[70] flex items-start justify-center bg-[#24272b]/35 p-4 pt-[12vh] backdrop-blur-sm" onMouseDown={onClose}><div className="w-full max-w-2xl overflow-hidden rounded-[24px] border border-[#ded5c9] bg-[#fbf8f2] shadow-[0_24px_70px_rgba(46,37,29,0.24)]" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center gap-3 border-b border-[#e3dbd0] px-5 py-4"><Search size={19} className="text-[#c56854]" /><input autoFocus value={query} onChange={(event) => onQueryChange(event.target.value)} onKeyDown={(event) => event.key === "Escape" && onClose()} placeholder="Search notebooks, whiteboards, and typed notes…" className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-[#383936] outline-none placeholder:text-[#aaa59b]" /><kbd className="hidden rounded-md border border-[#ddd4c8] bg-[#f3eee6] px-2 py-1 text-[10px] font-bold text-[#98948b] sm:inline">ESC</kbd></div><div className="max-h-[55vh] overflow-auto p-3">{query && results.length ? results.map((notebook) => <button key={notebook.id} onClick={() => onOpen(notebook)} className="flex w-full items-center gap-3 rounded-xl p-3 text-left hover:bg-[#f0e8dd]"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#e9ddd2] text-xs font-black text-[#9a5f52]">{notebook.icon || "NOTE"}</span><span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-[#454640]">{notebook.title}</span><span className="mt-1 block truncate text-xs text-[#8f8b83]">{notebook.subtitle} · {notebook.boards.length} whiteboards</span></span><ChevronRight size={16} className="text-[#aaa197]" /></button>) : <div className="px-4 py-12 text-center"><Search size={24} className="mx-auto text-[#cfc5b8]" /><p className="mt-3 text-sm font-semibold text-[#77746e]">{query ? "No matching notes" : "Search across your local library"}</p><p className="mt-1 text-xs text-[#aaa59b]">Use the title, subtitle, or whiteboard name.</p></div>}</div></div></div>;
+}
+
+function SettingsPanel({ preferences, onChange, onClose }: { preferences: DisplayPreferences; onChange: React.Dispatch<React.SetStateAction<DisplayPreferences>>; onClose: () => void }) {
+  const update = <K extends keyof DisplayPreferences>(key: K, value: DisplayPreferences[K]) => onChange((current) => ({ ...current, [key]: value }));
+  return <div className="fixed inset-0 z-[70] flex justify-end bg-[#24272b]/30 backdrop-blur-sm" onMouseDown={onClose}><section className="h-full w-full max-w-[440px] overflow-auto border-l border-[#ded5c9] bg-[#fbf8f2] p-5 shadow-[-18px_0_55px_rgba(46,37,29,0.18)]" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-[#c56854]">Workspace</p><h2 className="mt-2 font-display text-3xl text-[#333432]">Settings</h2><p className="mt-2 text-sm leading-5 text-[#858178]">Your preferences are stored locally on this device.</p></div><button onClick={onClose} className="rounded-xl p-2 text-[#8f8b83] hover:bg-[#eee6dc]" aria-label="Close settings"><X size={18} /></button></div><div className="mt-8 space-y-6"><section><h3 className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-[#88847b]">Theme</h3><div className="grid grid-cols-3 gap-2">{([["light", <Sun size={15} />, "Light"], ["dark", <Moon size={15} />, "Dark"], ["contrast", <Contrast size={15} />, "High contrast"]] as const).map(([value, icon, label]) => <button key={value} onClick={() => update("theme", value)} className={`flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-xs font-bold transition ${preferences.theme === value ? "border-[#d78672] bg-[#fff0e9] text-[#c56854]" : "border-[#ded6cb] bg-[#fffdf9] text-[#77746e] hover:border-[#d6b1a5]"}`}>{icon}{label}</button>)}</div></section><section className="space-y-2"><h3 className="mb-3 text-xs font-bold uppercase tracking-[0.16em] text-[#88847b]">Display preferences</h3>{([["largeText", <Type size={16} />, "Larger text", "Increase reading size across the workspace"], ["reducedMotion", <RotateCw size={16} />, "Reduced motion", "Minimize transitions and animations"], ["compactToolbar", <SlidersHorizontal size={16} />, "Compact toolbar", "Keep more editor tools visible on small screens"], ["leftHanded", <MoveHorizontal size={16} />, "Left-handed layout", "Move the editor controls closer to the left side"]] as const).map(([key, icon, label, description]) => <label key={key} className="flex cursor-pointer items-center gap-3 rounded-xl border border-[#e2dbd0] bg-[#fffdf9] p-3"><span className="text-[#c56854]">{icon}</span><span className="min-w-0 flex-1"><span className="block text-sm font-bold text-[#55554e]">{label}</span><span className="mt-0.5 block text-xs text-[#96928a]">{description}</span></span><input type="checkbox" checked={preferences[key]} onChange={(event) => update(key, event.target.checked)} className="h-4 w-4 accent-[#d66f59]" /></label>)}</section><section className="rounded-2xl border border-[#ded6cb] bg-[#f6f1e9] p-4"><div className="flex items-center gap-2 text-sm font-bold text-[#56564f]"><Save size={16} className="text-[#6f9c78]" /> Autosave</div><p className="mt-2 text-xs leading-5 text-[#89857d]">Changes are written to local storage automatically. Imported files are kept in IndexedDB for offline access.</p><div className="mt-3 flex items-center gap-2 text-xs font-bold text-[#66846d]"><CheckCircle2 size={14} /> Saved locally on this device</div></section></div></section></div>;
 }
 
 function ClockIcon() { return <CalendarDays size={17} />; }
