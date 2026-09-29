@@ -739,3 +739,7 @@ main:has(.paper-frame) .paper-frame::after { display: none !important; }
 .minimap-viewport { position: absolute; left: 19px; right: 19px; min-height: 18px; border: 2px solid #d66f59; border-radius: 4px; background: rgba(214,111,89,.12); pointer-events: none; }
 .minimap-hint { display: block; margin-top: 6px; color: #9b9186; font-size: 8px; line-height: 1.25; }
 @media (max-width: 700px) { .canvas-minimap { right: 12px; bottom: 12px; transform: scale(.92); transform-origin: bottom right; } }
+
+/* More vertical writing room; at 4% this still presents as a full-page overview. */
+main:has(.paper-frame) .paper-frame { height: 20000px !important; min-height: 20000px !important; }
+main:has(.paper-frame) .paper-frame canvas { height: 20000px !important; min-height: 20000px !important; }
