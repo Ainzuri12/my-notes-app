@@ -753,30 +753,3 @@ main:has(.paper-frame) .paper-frame canvas { height: 20000px !important; min-hei
 main:has(.paper-frame) .paper-workspace { touch-action: none !important; }
 main:has(.paper-frame) .paper-frame,
 main:has(.paper-frame) .paper-frame canvas { touch-action: none !important; }
-
-/* The logical canvas remains 1200 units wide so existing strokes keep their
-   coordinates. Give the infinite paper a wider display surface so low zoom
-   shows a usable workspace instead of a narrow 1200x20000 strip. */
-main:has(.paper-frame) .paper-frame {
-  width: 2200px !important;
-  max-width: none !important;
-}
-main:has(.paper-frame) .paper-frame canvas {
-  width: 100% !important;
-}
-
-/* Keep the wide paper from shrinking to the viewport because it is a flex item. */
-main:has(.paper-frame) .paper-frame {
-  flex: 0 0 2200px !important;
-  width: 2200px !important;
-  max-width: none !important;
-}
-
-/* Final guard: responsive width rules must never collapse the zoomable paper. */
-main:has(.paper-frame) .paper-frame {
-  min-width: 2200px !important;
-  width: 2200px !important;
-  max-width: 2200px !important;
-  flex: 0 0 2200px !important;
-  flex-shrink: 0 !important;
-}
