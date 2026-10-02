@@ -976,7 +976,7 @@ export default function Home() {
 
   function openBoardCreator(notebookOverride?: Notebook, templateId = "lined") {
     const notebook = notebookOverride ?? activeNotebook;
-    if (!notebook || (notebook.id === activeNotebook?.id && (activePdf || activeImage))) return;
+    if (!notebook) return;
     const template = pageTemplates.find((item) => item.id === templateId) ?? pageTemplates[0];
     setBoardCreatorNotebookId(notebook.id);
     setBoardCreatorTemplateId(template.id);
@@ -988,7 +988,7 @@ export default function Home() {
   function createWhiteboards() {
     const notebook = notebooks.find((item) => item.id === boardCreatorNotebookId);
     const template = pageTemplates.find((item) => item.id === boardCreatorTemplateId) ?? pageTemplates[0];
-    if (!notebook || (notebook.id === activeNotebook?.id && (activePdf || activeImage))) return;
+    if (!notebook) return;
     const count = Math.min(20, Math.max(1, boardCreatorCount));
     const firstNumber = notebook.boards.length + 1;
     const boards: Board[] = Array.from({ length: count }, (_, index) => ({ id: makeId(), title: `${template.name} ${firstNumber + index}`, updated: "Edited just now", templateId: template.id, color: boardCreatorColor }));
