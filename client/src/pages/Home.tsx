@@ -1052,7 +1052,9 @@ export default function Home() {
       window.setTimeout(() => setImportStatus(null), 2600);
       return;
     }
-    const importedPageCount = isPdf ? 12 : 1;
+    // pdf.js reports the real count after loading; start with one page instead
+    // of inventing a 12-page placeholder that can hide or overwrite pages.
+    const importedPageCount = 1;
     const imported: Notebook = {
       id: makeId(),
       title: formatFileName(file.name),
