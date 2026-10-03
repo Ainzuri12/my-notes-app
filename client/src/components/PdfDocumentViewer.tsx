@@ -104,7 +104,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
   if (!pdfState) return null;
 
   return (
-    <div className="grid min-h-[620px] grid-cols-[76px_minmax(0,1fr)] gap-4 rounded-xl bg-[#fffdf8] p-3 sm:grid-cols-[92px_minmax(0,1fr)] sm:p-5">
+    <div className="pdf-document-viewer grid min-h-[620px] grid-cols-[76px_minmax(0,1fr)] gap-4 rounded-xl bg-[#fffdf8] p-3 sm:grid-cols-[92px_minmax(0,1fr)] sm:p-5">
       <div className="space-y-3 overflow-y-auto pr-1" aria-label="PDF page thumbnails">
         {thumbs.map((thumbnail, index) => {
           const page = index + 1;
