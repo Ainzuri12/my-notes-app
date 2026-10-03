@@ -724,14 +724,28 @@ main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(2) {
   white-space: nowrap;
 }
 main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(2) > button {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
   flex: 0 0 auto !important;
-  min-width: 52px;
-  width: auto;
+  width: 54px;
+  min-width: 54px;
   height: 54px;
   min-height: 54px;
   max-height: 54px;
+  gap: 8px !important;
   padding: 6px 9px;
+  font-size: 11px !important;
+  line-height: 1.25 !important;
   white-space: nowrap;
+}
+main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(2) > button > svg {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  flex: 0 0 18px !important;
 }
 main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(n+3) { display: none !important; }
 @media (max-width: 1200px) {
