@@ -279,6 +279,7 @@ export default function Home() {
   const [imageRedoStack, setImageRedoStack] = useState<ImageLayout[]>([]);
   const [activePdf, setActivePdf] = useState<File | null>(null);
   const [activeImage, setActiveImage] = useState<File | null>(null);
+  const pendingImportedFilesRef = useRef(new Map<string, File>());
   const [activeImageUrl, setActiveImageUrl] = useState<string | null>(null);
   const [imagePageKeys, setImagePageKeys] = useState<Record<string, boolean>>(() => readStored(IMAGE_PAGE_STORAGE_KEY, {}));
   const [imageLayouts, setImageLayouts] = useState<Record<string, ImageLayout>>(() => readStored(IMAGE_LAYOUT_STORAGE_KEY, {}));
@@ -432,8 +433,12 @@ export default function Home() {
       setActiveImage(null);
       return () => { cancelled = true; };
     }
-    loadImportedFile(storageKey).then((file) => {
+    loadImportedFile(storageKey).then((storedFile) => {
       if (cancelled) return;
+      // IndexedDB can finish saving just after the notebook becomes active.
+      // Keep the file selected during that short window instead of replacing it
+      // with null and leaving the editor blank.
+      const file = storedFile ?? pendingImportedFilesRef.current.get(storageKey) ?? null;
       if (activeNotebook?.subtitle.includes("Imported image") || (!isImportedNotebook && Boolean(file))) {
         setActiveImage(file);
         setActivePdf(null);
@@ -1066,6 +1071,7 @@ export default function Home() {
       boards: makeBoards(importedPageCount, "Page", "Imported just now"),
     };
     setNotebooks((current) => [imported, ...current]);
+    pendingImportedFilesRef.current.set(imported.id, file);
     setActivePdf(isPdf ? file : null);
     setActiveImage(isImage ? file : null);
     setImportStatus({ name: file.name, progress: 55, message: "Saving locally…" });
