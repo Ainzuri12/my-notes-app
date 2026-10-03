@@ -434,8 +434,10 @@ export default function Home() {
   }, [displayPreferences]);
   useEffect(() => {
     let cancelled = false;
-    const isImportedNotebook = activeNotebook?.subtitle.includes("Imported PDF") || activeNotebook?.subtitle.includes("Imported image");
-    const storageKey = isImportedNotebook ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
+    const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF");
+    const isImportedImage = activeNotebook?.subtitle.includes("Imported image");
+    const isImportedNotebook = isImportedPdf || isImportedImage;
+    const storageKey = isImportedPdf || isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
     if (!storageKey) {
       setActivePdf(null);
       setActiveImage(null);
@@ -447,7 +449,7 @@ export default function Home() {
       // Keep the file selected during that short window instead of replacing it
       // with null and leaving the editor blank.
       const file = storedFile ?? pendingImportedFilesRef.current.get(storageKey) ?? null;
-      if (activeNotebook?.subtitle.includes("Imported image") || (!isImportedNotebook && Boolean(file))) {
+      if (isImportedImage || (!isImportedNotebook && Boolean(file))) {
         setActiveImage(file);
         setActivePdf(null);
       } else {
@@ -461,7 +463,7 @@ export default function Home() {
       }
     });
     return () => { cancelled = true; };
-  }, [activeNotebook?.id, activeNotebook?.subtitle, activePageKey]);
+  }, [activeNotebook?.id, activeNotebook?.subtitle, activeNotebook?.subtitle.includes("Imported PDF") ? activeNotebook?.id : activePageKey]);
 
   useEffect(() => {
     if (!activeImage) {
@@ -1092,6 +1094,8 @@ export default function Home() {
     event.target.value = "";
   }
 
+  const pdfOverlay = activePdf ? <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="pointer-events-auto absolute inset-0 h-full w-full touch-none" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting overlay" onContextMenu={(event) => event.preventDefault()} /> : null;
+
   function handleNotebookDragStart(event: React.DragEvent, notebookId: string) {
     event.dataTransfer.setData("text/paperflow-notebook", notebookId);
     event.dataTransfer.effectAllowed = "move";
@@ -1367,7 +1371,7 @@ export default function Home() {
                   <div><div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#a56555]"><NotebookPen size={14} /> {activeNotebook?.title ?? "Notebook"}</div><h2 className="font-display text-2xl tracking-[-0.03em]">{activeBoard?.title ?? "Whiteboard"}</h2></div>
                   <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={() => setMinimapOpen((open) => !open)} className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${minimapOpen ? "border-[#d66f59] bg-[#fff0e9] text-[#a95544]" : "border-[#cfc5b7] bg-[#f8f5ef]/75 text-[#464743] hover:bg-white"}`} aria-pressed={minimapOpen} aria-label="Toggle canvas overview"><MapIcon size={15} /> <span className="hidden sm:inline">Overview</span></button><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
-                <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]">
+                <div className={activePdf ? "flex min-h-0 flex-1 flex-col" : "grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]"}>
                   <div ref={workspaceRef} className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel} onScroll={(event) => { const element = event.currentTarget; setWorkspaceScroll({ top: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }); }}>
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
                       <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length && !imageHistory.length} onClick={undo} />
@@ -1394,13 +1398,12 @@ export default function Home() {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
                       setNotebooks((current) => current.map((notebook) => notebook.id === notebookId ? { ...notebook, pages: count, boards: makeImportedPdfBoards(notebook.id, count) } : notebook));
-                      setActiveBoardId(`${notebookId}:pdf-page-1`);
                     }} onPageChange={(pageNumber) => {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
                       const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
                       setActiveBoardId(targetBoard?.id ?? `${notebookId}:pdf-page-${pageNumber}`);
-                    }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
+                    }} overlay={pdfOverlay} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
                         {tool === "select" && imageSelected && <div className="image-resize-handle" role="slider" aria-label="Resize imported image" tabIndex={0} onPointerDown={(event) => beginImageInteraction(event, "resize")} />}
@@ -1419,7 +1422,7 @@ export default function Home() {
                       {lassoPoints.length > 1 && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${CANVAS_WIDTH} ${CANVAS_HEIGHT}`} preserveAspectRatio="none"><polyline points={lassoPoints.map((point) => `${point.x},${point.y}`).join(" ")} fill="rgba(214,111,89,0.08)" stroke="#d66f59" strokeWidth="5" strokeDasharray="18 14" /></svg>}
                     </div>}
                   </div>
-                  <aside className="editor-toolbar border-t border-[#d2c8ba] bg-[#f4efe7]/80 lg:border-l lg:border-t-0">
+                  <aside className={`editor-toolbar bg-[#f4efe7]/80 ${activePdf ? "order-first border-b border-[#d2c8ba]" : "border-t border-[#d2c8ba] lg:border-l lg:border-t-0"}`}>
                     <div className="flex items-center justify-between border-b border-[#d9d0c3] px-5 py-4"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Writing tools</span><button className="rounded-lg p-1.5 text-[#929089] hover:bg-[#e6dfd5]" onClick={() => showComingSoon("Toolbar settings")} aria-label="Toolbar settings"><Settings2 size={16} /></button></div>
                     <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /><EditorTool active={false} icon={<FileUp size={18} />} label="Import" onClick={() => fileInputRef.current?.click()} /><label className="editor-quick-color flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[#d5cbbd] bg-[#fffaf5] text-[#6f6d66]" title="Choose ink color"><Palette size={16} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute h-0 w-0 opacity-0" aria-label="Choose ink color" /></label><label className="editor-quick-size flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#d5cbbd] bg-[#fffaf5] px-2 text-[10px] font-bold text-[#6f6d66]" title="Adjust brush size"><span>Size</span><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><output>{penSize}</output></label></div>
                     <div className="space-y-5 px-5 pb-5"><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Ink colour</span><span className="font-mono text-[10px] text-[#aaa59b]">{selectedColor.toUpperCase()}</span></div><div className="flex flex-wrap items-center gap-2"><ColorDot color="#2f456f" active={selectedColor === "#2f456f"} onClick={() => setSelectedColor("#2f456f")} /><ColorDot color="#d66f59" active={selectedColor === "#d66f59"} onClick={() => setSelectedColor("#d66f59")} /><ColorDot color="#6e927e" active={selectedColor === "#6e927e"} onClick={() => setSelectedColor("#6e927e")} /><ColorDot color="#d2a73b" active={selectedColor === "#d2a73b"} onClick={() => setSelectedColor("#d2a73b")} /><ColorDot color="#25282c" active={selectedColor === "#25282c"} onClick={() => setSelectedColor("#25282c")} /><label className="relative flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-[#bdb4a9] bg-[#fffaf5] text-[#8e8a81]" title="Choose a custom ink color"><Palette size={13} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Choose a custom ink color" /></label></div></div><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Brush size</span><span className="font-mono text-[10px] text-[#aaa59b]">{penSize}px</span></div><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="h-2 w-full cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><div className="mt-2 flex items-center justify-between text-[10px] text-[#aaa59b]"><span>1px</span><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#f9f6f0]" aria-hidden="true"><span className="rounded-full bg-[#2f456f]" style={{ width: `${Math.min(18, Math.max(2, penSize))}px`, height: `${Math.min(18, Math.max(2, penSize))}px` }} /></span><span>40px</span></div></div><div className="rounded-xl border border-[#ded4c6] bg-[#faf7f2] p-3"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#686861]"><Tablet size={14} className="text-[#c56b58]" /> Tablet ready</div><p className="text-[11px] leading-4 text-[#98958d]">Pressure-aware ink, palm-friendly input, and offline saves work across iPadOS, Android, and desktop.</p></div></div>
