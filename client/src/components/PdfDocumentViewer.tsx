@@ -22,6 +22,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
   const [error, setError] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Array<string | null>>([]);
   const pageCanvasRef = useRef<HTMLCanvasElement>(null);
+  const renderTaskRef = useRef<ReturnType<pdfjsLib.PDFPageProxy["render"]> | null>(null);
   const generationRef = useRef(0);
 
   useEffect(() => {
@@ -54,6 +55,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
   useEffect(() => {
     const document = pdfState?.document;
     if (!document) return;
+    renderTaskRef.current?.cancel();
     let cancelled = false;
     const safePageNumber = Math.min(document.numPages, Math.max(1, pageNumber));
     document.getPage(safePageNumber).then(async (page) => {
@@ -62,9 +64,18 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
       const canvas = pageCanvasRef.current;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
-    }).catch(() => setError("The selected page could not be rendered."));
-    return () => { cancelled = true; };
+      const renderTask = page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
+      renderTaskRef.current = renderTask;
+      await renderTask.promise;
+    }).catch((renderError: unknown) => {
+      if (cancelled || (renderError instanceof Error && renderError.name === "RenderingCancelledException")) return;
+      setError("The selected page could not be rendered.");
+    });
+    return () => {
+      cancelled = true;
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = null;
+    };
   }, [pdfState, pageNumber, zoom]);
 
   useEffect(() => {
@@ -100,8 +111,8 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
   }, [pdfState]);
 
   if (!file) return null;
-  if (loading) return <div className="flex min-h-[620px] items-center justify-center rounded-xl bg-[#fffdf8] text-sm font-semibold text-[#8a8880]">Rendering {file.name}…</div>;
-  if (error) return <div className="flex min-h-[620px] items-center justify-center rounded-xl bg-[#fffdf8] px-6 text-center text-sm font-semibold text-[#bd5f50]">{error}</div>;
+  if (loading) return <div className="pdf-document-viewer flex min-h-[620px] items-center justify-center rounded-xl bg-[#fffdf8] text-sm font-semibold text-[#8a8880]">Rendering {file.name}…</div>;
+  if (error) return <div className="pdf-document-viewer flex min-h-[620px] items-center justify-center rounded-xl bg-[#fffdf8] px-6 text-center text-sm font-semibold text-[#bd5f50]">{error}</div>;
   if (!pdfState) return null;
 
   return (
