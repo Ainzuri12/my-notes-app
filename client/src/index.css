@@ -693,9 +693,9 @@ main:has(.pdf-document-viewer) .editor-toolbar {
   width: max-content !important;
   max-width: calc(100vw - 24px) !important;
   min-width: 0 !important;
-  height: 42px !important;
-  min-height: 42px !important;
-  max-height: 54px !important;
+  height: 66px !important;
+  min-height: 66px !important;
+  max-height: 66px !important;
   transform: translateX(-50%) !important;
   align-items: center !important;
   border: 1px solid rgba(208, 198, 186, 0.92) !important;
@@ -726,7 +726,10 @@ main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(2) {
 main:has(.pdf-document-viewer) .editor-toolbar > div:nth-child(2) > button {
   flex: 0 0 auto !important;
   min-width: 52px;
-  min-height: 34px;
+  width: auto;
+  height: 54px;
+  min-height: 54px;
+  max-height: 54px;
   padding: 6px 9px;
   white-space: nowrap;
 }
