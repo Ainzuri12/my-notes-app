@@ -17,7 +17,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange 
   const [pdfState, setPdfState] = useState<PdfState>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [thumbs, setThumbs] = useState<string[]>([]);
+  const [thumbs, setThumbs] = useState<Array<string | null>>([]);
   const pageCanvasRef = useRef<HTMLCanvasElement>(null);
   const generationRef = useRef(0);
 
@@ -36,6 +36,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange 
     file.arrayBuffer().then((data) => pdfjsLib.getDocument({ data }).promise).then((document) => {
       if (cancelled || generation !== generationRef.current) return;
       setPdfState({ document, source: file.name });
+      setThumbs(Array.from({ length: document.numPages }, () => null));
       onPageCount(document.numPages);
       onPageChange(1);
       setLoading(false);
@@ -51,7 +52,8 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange 
     const document = pdfState?.document;
     if (!document) return;
     let cancelled = false;
-    document.getPage(pageNumber).then(async (page) => {
+    const safePageNumber = Math.min(document.numPages, Math.max(1, pageNumber));
+    document.getPage(safePageNumber).then(async (page) => {
       if (cancelled || !pageCanvasRef.current) return;
       const viewport = page.getViewport({ scale: 1.4 });
       const canvas = pageCanvasRef.current;
@@ -67,20 +69,30 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange 
     if (!document) return;
     let cancelled = false;
     const renderThumbs = async () => {
-      const rendered: string[] = [];
-      for (let index = 1; index <= document.numPages; index += 1) {
+      // Render in small batches so the selected page stays responsive even for
+      // large documents. Placeholders are shown immediately for every page.
+      for (let start = 1; start <= document.numPages; start += 3) {
         if (cancelled) return;
-        const page = await document.getPage(index);
-        const viewport = page.getViewport({ scale: 0.22 });
-        const canvas = window.document.createElement("canvas");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
-        rendered.push(canvas.toDataURL("image/jpeg", 0.76));
-        setThumbs([...rendered]);
+        const indexes = Array.from({ length: Math.min(3, document.numPages - start + 1) }, (_, offset) => start + offset);
+        await Promise.all(indexes.map(async (index) => {
+          try {
+            const page = await document.getPage(index);
+            const viewport = page.getViewport({ scale: 0.22 });
+            const canvas = window.document.createElement("canvas");
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
+            if (!cancelled) setThumbs((current) => current.map((thumbnail, pageIndex) => pageIndex === index - 1 ? canvas.toDataURL("image/jpeg", 0.76) : thumbnail));
+            page.cleanup();
+          } catch {
+            // Keep the page slot available even if an individual thumbnail is
+            // not renderable; the full-size page can still be selected/rendered.
+          }
+        }));
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
       }
     };
-    renderThumbs().catch(() => setError("Some page thumbnails could not be rendered."));
+    void renderThumbs();
     return () => { cancelled = true; };
   }, [pdfState]);
 
@@ -94,7 +106,10 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange 
       <div className="space-y-3 overflow-y-auto pr-1" aria-label="PDF page thumbnails">
         {thumbs.map((thumbnail, index) => {
           const page = index + 1;
-          return <button key={thumbnail} onClick={() => onPageChange(page)} className={`group w-full rounded-lg border p-1.5 text-left transition ${page === pageNumber ? "border-[#d66f59] bg-[#fff2ec] shadow-sm" : "border-[#e5dfd4] bg-[#f8f5ef] hover:border-[#d7b1a5]"}`}><img src={thumbnail} alt={`Page ${page}`} className="w-full rounded-[3px] border border-black/5" /><span className={`mt-1 block text-center text-[10px] font-bold ${page === pageNumber ? "text-[#c56854]" : "text-[#99978f]"}`}>{page}</span></button>;
+          return <button key={page} onClick={() => onPageChange(page)} className={`group w-full rounded-lg border p-1.5 text-left transition ${page === pageNumber ? "border-[#d66f59] bg-[#fff2ec] shadow-sm" : "border-[#e5dfd4] bg-[#f8f5ef] hover:border-[#d7b1a5]"}`} aria-label={`Go to page ${page}`}>
+            {thumbnail ? <img src={thumbnail} alt={`Page ${page}`} className="w-full rounded-[3px] border border-black/5" /> : <span className="block aspect-[0.72] w-full animate-pulse rounded-[3px] border border-black/5 bg-[#eee8df]" aria-hidden="true" />}
+            <span className={`mt-1 block text-center text-[10px] font-bold ${page === pageNumber ? "text-[#c56854]" : "text-[#99978f]"}`}>{page}</span>
+          </button>;
         })}
         {!thumbs.length && <div className="space-y-2">{[1, 2, 3].map((item) => <div key={item} className="h-20 animate-pulse rounded-lg bg-[#f0ebe3]" />)}</div>}
       </div>
