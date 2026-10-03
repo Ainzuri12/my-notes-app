@@ -310,6 +310,7 @@ export default function Home() {
   const [displayPreferences, setDisplayPreferences] = useState<DisplayPreferences>(() => readStored(DISPLAY_PREFS_KEY, defaultDisplayPreferences));
   const [sortOrder, setSortOrder] = useState<"recent" | "name" | "pages">("recent");
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
+  const [attachedPdfPage, setAttachedPdfPage] = useState(1);
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [boardCreatorOpen, setBoardCreatorOpen] = useState(false);
   const [boardCreatorNotebookId, setBoardCreatorNotebookId] = useState<string | null>(null);
@@ -437,23 +438,28 @@ export default function Home() {
     const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF");
     const isImportedImage = activeNotebook?.subtitle.includes("Imported image");
     const isImportedNotebook = isImportedPdf || isImportedImage;
-    const storageKey = isImportedPdf || isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
-    if (!storageKey) {
+    const pdfStorageKey = isImportedPdf ? activeNotebook?.id : activePageKey ? `pdf:${activePageKey}` : "";
+    const imageStorageKey = isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
+    if (!pdfStorageKey && !imageStorageKey) {
       setActivePdf(null);
       setActiveImage(null);
       return () => { cancelled = true; };
     }
-    loadImportedFile(storageKey).then((storedFile) => {
+    Promise.all([pdfStorageKey ? loadImportedFile(pdfStorageKey) : Promise.resolve(null), imageStorageKey ? loadImportedFile(imageStorageKey) : Promise.resolve(null)]).then(([storedPdf, storedImage]) => {
       if (cancelled) return;
       // IndexedDB can finish saving just after the notebook becomes active.
       // Keep the file selected during that short window instead of replacing it
       // with null and leaving the editor blank.
-      const file = storedFile ?? pendingImportedFilesRef.current.get(storageKey) ?? null;
-      if (isImportedImage || (!isImportedNotebook && Boolean(file))) {
-        setActiveImage(file);
+      const pdf = storedPdf ?? (pdfStorageKey ? pendingImportedFilesRef.current.get(pdfStorageKey) : null) ?? null;
+      const image = storedImage ?? (imageStorageKey ? pendingImportedFilesRef.current.get(imageStorageKey) : null) ?? null;
+      if (pdf) {
+        setActivePdf(pdf);
+        setActiveImage(null);
+      } else if (isImportedImage || (!isImportedNotebook && Boolean(image))) {
+        setActiveImage(image);
         setActivePdf(null);
       } else {
-        setActivePdf(file);
+        setActivePdf(null);
         setActiveImage(null);
       }
     }).catch(() => {
@@ -463,7 +469,7 @@ export default function Home() {
       }
     });
     return () => { cancelled = true; };
-  }, [activeNotebook?.id, activeNotebook?.subtitle, activeNotebook?.subtitle.includes("Imported PDF") ? activeNotebook?.id : activePageKey]);
+  }, [activeNotebook?.id, activeNotebook?.subtitle, activeNotebook?.subtitle.includes("Imported PDF") || activeNotebook?.subtitle.includes("Imported image") ? activeNotebook?.id : activePageKey]);
 
   useEffect(() => {
     if (!activeImage) {
@@ -1053,6 +1059,18 @@ export default function Home() {
       toast.error("That file type is not supported", { description: "Import a PDF, PNG, JPG, WEBP, or GIF file." });
       return;
     }
+    if (isPdf && currentView === "editor" && activeNotebook && activeBoard && !activeNotebook.subtitle.includes("Imported PDF")) {
+      const storageKey = `pdf:${activePageKey}`;
+      pendingImportedFilesRef.current.set(storageKey, file);
+      setActivePdf(file);
+      setActiveImage(null);
+      setAttachedPdfPage(1);
+      setImportStatus({ name: file.name, progress: 55, message: "Saving to this whiteboard…" });
+      saveImportedFile(storageKey, file).then(() => { setImportStatus({ name: file.name, progress: 100, message: "Added to whiteboard" }); toast.success("PDF added to this whiteboard", { description: "It stays attached here and does not create a new notebook." }); }).catch(() => toast.error("PDF could not be saved locally", { description: "You can still annotate it for this session." }));
+      event.target.value = "";
+      window.setTimeout(() => setImportStatus(null), 2600);
+      return;
+    }
     if (isImage && currentView === "editor" && activeNotebook && activeBoard) {
       const imageFiles = files.filter((entry) => entry.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(entry.name));
       const pageKey = activePageKey;
@@ -1094,6 +1112,7 @@ export default function Home() {
     event.target.value = "";
   }
 
+  const attachedPdf = Boolean(activePdf && activeNotebook && !activeNotebook.subtitle.includes("Imported PDF"));
   const pdfOverlay = activePdf ? <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="pointer-events-auto absolute inset-0 h-full w-full touch-none" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting overlay" onContextMenu={(event) => event.preventDefault()} /> : null;
 
   function handleNotebookDragStart(event: React.DragEvent, notebookId: string) {
@@ -1371,7 +1390,7 @@ export default function Home() {
                   <div><div className="mb-1 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.18em] text-[#a56555]"><NotebookPen size={14} /> {activeNotebook?.title ?? "Notebook"}</div><h2 className="font-display text-2xl tracking-[-0.03em]">{activeBoard?.title ?? "Whiteboard"}</h2></div>
                   <div className="flex items-center gap-2"><span className="hidden rounded-full bg-[#f8f5ef]/75 px-3 py-1.5 text-xs font-semibold text-[#77776f] sm:inline-flex">Whiteboard {activeBoardIndex + 1} of {activeNotebook?.boards.length ?? 1}</span><button onClick={() => setMinimapOpen((open) => !open)} className={`flex items-center gap-2 rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${minimapOpen ? "border-[#d66f59] bg-[#fff0e9] text-[#a95544]" : "border-[#cfc5b7] bg-[#f8f5ef]/75 text-[#464743] hover:bg-white"}`} aria-pressed={minimapOpen} aria-label="Toggle canvas overview"><MapIcon size={15} /> <span className="hidden sm:inline">Overview</span></button><button onClick={exportNotebook} className="flex items-center gap-2 rounded-xl border border-[#cfc5b7] bg-[#f8f5ef]/75 px-3.5 py-2 text-sm font-semibold text-[#464743] transition hover:bg-white"><Download size={15} /> Export</button><button onClick={exportAnnotatedPdf} className="flex items-center gap-2 rounded-xl bg-[#25282c] px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-[#3b3e42]"><FileDown size={15} /> PDF</button></div>
                 </div>
-                <div className={activePdf ? "flex min-h-0 flex-1 flex-col" : "grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]"}>
+                <div className={activePdf ? "contents" : "grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_240px]"}>
                   <div ref={workspaceRef} className="paper-workspace relative flex min-h-[calc(100vh-190px)] items-start justify-center overflow-auto bg-[#dcd4c7] p-3 sm:p-6 lg:p-8" onWheel={handleWorkspaceWheel} onScroll={(event) => { const element = event.currentTarget; setWorkspaceScroll({ top: element.scrollTop, scrollHeight: element.scrollHeight, clientHeight: element.clientHeight }); }}>
                     <div className="absolute left-5 top-5 flex items-center gap-1 rounded-xl border border-[#c9c0b3] bg-[#eee8de]/85 p-1 shadow-sm backdrop-blur-sm sm:left-8 sm:top-8">
                       <ToolButton icon={<Undo2 size={16} />} label="Undo" disabled={!history.length && !imageHistory.length} onClick={undo} />
@@ -1394,13 +1413,21 @@ export default function Home() {
                       <span className="zoom-dock-divider" />
                       <button onClick={fitZoom} aria-label="Fit canvas" title="Fit canvas"><Maximize2 size={14} /></button>
                     </div>
-                    {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => {
+                    {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={attachedPdf ? attachedPdfPage : (activeBoard?.pageNumber ?? 1)} onPageCount={(count) => {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
+                      if (attachedPdf) {
+                        setAttachedPdfPage((current) => Math.min(Math.max(1, current), count));
+                        return;
+                      }
                       setNotebooks((current) => current.map((notebook) => notebook.id === notebookId ? { ...notebook, pages: count, boards: makeImportedPdfBoards(notebook.id, count) } : notebook));
                     }} onPageChange={(pageNumber) => {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
+                      if (attachedPdf) {
+                        setAttachedPdfPage(pageNumber);
+                        return;
+                      }
                       const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
                       setActiveBoardId(targetBoard?.id ?? `${notebookId}:pdf-page-${pageNumber}`);
                     }} overlay={pdfOverlay} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
