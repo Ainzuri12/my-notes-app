@@ -1413,7 +1413,7 @@ export default function Home() {
                       <span className="zoom-dock-divider" />
                       <button onClick={fitZoom} aria-label="Fit canvas" title="Fit canvas"><Maximize2 size={14} /></button>
                     </div>
-                    {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={attachedPdf ? attachedPdfPage : (activeBoard?.pageNumber ?? 1)} onPageCount={(count) => {
+                    {activePdf ? <PdfDocumentViewer file={activePdf} zoom={zoom} pageNumber={attachedPdf ? attachedPdfPage : (activeBoard?.pageNumber ?? 1)} onPageCount={(count) => {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
                       if (attachedPdf) {
