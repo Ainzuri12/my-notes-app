@@ -11,11 +11,12 @@ type PdfDocumentViewerProps = {
   onPageCount: (count: number) => void;
   onPageChange: (page: number) => void;
   overlay?: ReactNode;
+  zoom?: number;
 };
 
 type PdfState = { document: pdfjsLib.PDFDocumentProxy; source: string } | null;
 
-export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange, overlay }: PdfDocumentViewerProps) {
+export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange, overlay, zoom = 100 }: PdfDocumentViewerProps) {
   const [pdfState, setPdfState] = useState<PdfState>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,14 +58,14 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
     const safePageNumber = Math.min(document.numPages, Math.max(1, pageNumber));
     document.getPage(safePageNumber).then(async (page) => {
       if (cancelled || !pageCanvasRef.current) return;
-      const viewport = page.getViewport({ scale: 1.4 });
+      const viewport = page.getViewport({ scale: 1.4 * Math.max(25, zoom) / 100 });
       const canvas = pageCanvasRef.current;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport }).promise;
     }).catch(() => setError("The selected page could not be rendered."));
     return () => { cancelled = true; };
-  }, [pdfState, pageNumber]);
+  }, [pdfState, pageNumber, zoom]);
 
   useEffect(() => {
     const document = pdfState?.document;
@@ -115,7 +116,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
         })}
         {!thumbs.length && <div className="space-y-2">{[1, 2, 3].map((item) => <div key={item} className="h-20 animate-pulse rounded-lg bg-[#f0ebe3]" />)}</div>}
       </div>
-      <div className="flex min-w-0 flex-col items-center overflow-auto rounded-lg bg-[#e5ded2] p-3 sm:p-5"><div className="mb-3 flex w-full items-center justify-between text-[11px] font-bold uppercase tracking-[0.16em] text-[#8f887d]"><span className="truncate">{pdfState.source}</span><span className="shrink-0">Page {pageNumber} / {pdfState.document.numPages}</span></div><div className="relative w-full max-w-[560px]"><canvas ref={pageCanvasRef} className="block h-auto w-full rounded-[2px] bg-white shadow-[0_14px_28px_rgba(62,52,40,0.18)]" />{overlay && <div className="pointer-events-none absolute inset-0">{overlay}</div>}</div></div>
+      <div className="flex min-w-0 flex-col items-center overflow-auto rounded-lg bg-[#e5ded2] p-3 sm:p-5"><div className="mb-3 flex w-full items-center justify-between text-[11px] font-bold uppercase tracking-[0.16em] text-[#8f887d]"><span className="truncate">{pdfState.source}</span><span className="shrink-0">Page {pageNumber} / {pdfState.document.numPages}</span></div><div className="relative max-w-none" style={{ width: `${Math.max(25, zoom)}%` }}><canvas ref={pageCanvasRef} className="block h-auto w-full rounded-[2px] bg-white shadow-[0_14px_28px_rgba(62,52,40,0.18)]" />{overlay && <div className="pointer-events-none absolute inset-0">{overlay}</div>}</div></div>
     </div>
   );
 }
