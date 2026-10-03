@@ -132,6 +132,14 @@ function makeBoards(count: number, prefix = "Whiteboard", updated = "Edited a wh
     pageNumber: index + 1,
   }));
 }
+function makeImportedPdfBoards(notebookId: string, count: number, updated = "Imported"): Board[] {
+  return Array.from({ length: Math.max(0, count) }, (_, index) => ({
+    id: `${notebookId}:pdf-page-${index + 1}`,
+    title: `Page ${index + 1}`,
+    updated,
+    pageNumber: index + 1,
+  }));
+}
 
 const biologyBoards: Board[] = makeBoards(38, "Whiteboard", "Edited 12 min ago").map((board, index) =>
   index === 3 ? { ...board, id: "bio-cellular-respiration", title: "Cellular respiration" } : board,
@@ -1060,15 +1068,16 @@ export default function Home() {
     // pdf.js reports the real count after loading; start with one page instead
     // of inventing a 12-page placeholder that can hide or overwrite pages.
     const importedPageCount = 1;
+    const importedId = makeId();
     const imported: Notebook = {
-      id: makeId(),
+      id: importedId,
       title: formatFileName(file.name),
       subtitle: `${isPdf ? "Imported PDF" : "Imported image"} · ready to annotate`,
       pages: importedPageCount,
       updated: "Imported just now",
       color: isPdf ? "navy" : "sage",
       icon: isPdf ? "PDF" : "IMG",
-      boards: makeBoards(importedPageCount, "Page", "Imported just now"),
+      boards: makeImportedPdfBoards(importedId, importedPageCount, "Imported just now"),
     };
     setNotebooks((current) => [imported, ...current]);
     pendingImportedFilesRef.current.set(imported.id, file);
@@ -1381,13 +1390,16 @@ export default function Home() {
                       <span className="zoom-dock-divider" />
                       <button onClick={fitZoom} aria-label="Fit canvas" title="Fit canvas"><Maximize2 size={14} /></button>
                     </div>
-                    {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => setNotebooks((current) => current.map((notebook) => {
-                      if (notebook.id !== activeNotebook?.id) return notebook;
-                      if (notebook.boards.length === count) return { ...notebook, pages: count };
-                      return { ...notebook, pages: count, boards: makeBoards(count, "Page", "Imported") };
-                    }))} onPageChange={(pageNumber) => {
-                      const targetBoard = activeNotebook?.boards.find((board) => board.pageNumber === pageNumber);
-                      if (targetBoard) setActiveBoardId(targetBoard.id);
+                    {activePdf ? <PdfDocumentViewer file={activePdf} pageNumber={activeBoard?.pageNumber ?? 1} onPageCount={(count) => {
+                      const notebookId = activeNotebook?.id;
+                      if (!notebookId) return;
+                      setNotebooks((current) => current.map((notebook) => notebook.id === notebookId ? { ...notebook, pages: count, boards: makeImportedPdfBoards(notebook.id, count) } : notebook));
+                      setActiveBoardId(`${notebookId}:pdf-page-1`);
+                    }} onPageChange={(pageNumber) => {
+                      const notebookId = activeNotebook?.id;
+                      if (!notebookId) return;
+                      const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
+                      setActiveBoardId(targetBoard?.id ?? `${notebookId}:pdf-page-${pageNumber}`);
                     }} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
                         <img src={activeImageUrl} alt={activeImage?.name ? `Imported ${activeImage.name}` : "Imported image"} className="block h-auto w-full select-none object-contain object-top" draggable={false} onError={() => toast.error("The imported image could not be displayed", { description: "Try importing the image again." })} />
