@@ -348,7 +348,6 @@ export default function Home() {
 
   useEffect(() => {
     strokesRef.current = strokes;
-    renderCanvas(strokes);
     if (pageKeyRef.current) {
       strokePagesRef.current[pageKeyRef.current] = strokes;
       writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
@@ -375,9 +374,20 @@ export default function Home() {
 
   useEffect(() => {
     if (currentView !== "editor") return;
-    const frame = window.requestAnimationFrame(() => renderCanvas(strokesRef.current));
-    return () => window.cancelAnimationFrame(frame);
-  }, [currentView, activePageKey]);
+    let firstFrame = 0;
+    let secondFrame = 0;
+    firstFrame = window.requestAnimationFrame(() => {
+      renderCanvas(strokesRef.current);
+      // The PDF viewer and the plain whiteboard can replace the canvas during
+      // the same commit. Paint once more after that replacement so saved ink
+      // is visible immediately, without requiring the user to draw first.
+      secondFrame = window.requestAnimationFrame(() => renderCanvas(strokesRef.current));
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [currentView, activePageKey, activePdf, activeImage, strokes]);
 
   function updatePageText(value: string) {
     if (!activePageKey) return;
