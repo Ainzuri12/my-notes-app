@@ -128,7 +128,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
         })}
         {!thumbs.length && <div className="space-y-2">{[1, 2, 3].map((item) => <div key={item} className="h-20 animate-pulse rounded-lg bg-[#f0ebe3]" />)}</div>}
       </div>
-      <div className="flex min-w-0 flex-col items-center overflow-auto rounded-lg bg-[#e5ded2] p-3 sm:p-5"><div className="mb-3 flex w-full items-center justify-between text-[11px] font-bold uppercase tracking-[0.16em] text-[#8f887d]"><span className="truncate">{pdfState.source}</span><span className="shrink-0">Page {pageNumber} / {pdfState.document.numPages}</span></div><div className="relative max-w-none" style={{ width: `${Math.max(25, zoom)}%` }}><canvas ref={pageCanvasRef} className="block h-auto w-full rounded-[2px] bg-white shadow-[0_14px_28px_rgba(62,52,40,0.18)]" />{overlay && <div className="pointer-events-none absolute inset-0">{overlay}</div>}</div></div>
+      <div className="flex min-w-0 flex-col items-center overflow-auto rounded-lg bg-[#e5ded2] p-3 sm:p-5"><div className="mb-3 flex w-full items-center justify-between text-[11px] font-bold uppercase tracking-[0.16em] text-[#8f887d]"><span className="truncate">{pdfState.source}</span><span className="shrink-0">Page {pageNumber} / {pdfState.document.numPages}</span></div><div className="relative max-w-none" style={{ width: `${Math.max(25, zoom)}%` }}><canvas ref={pageCanvasRef} className="block h-auto w-full rounded-[2px] bg-white shadow-[0_14px_28px_rgba(62,52,40,0.18)]" />{overlay && <div className="absolute inset-0">{overlay}</div>}</div></div>
     </div>
   );
 }
