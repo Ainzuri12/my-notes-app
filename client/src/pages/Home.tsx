@@ -232,6 +232,12 @@ function formatFileName(name: string) {
   return name.replace(/\.[^/.]+$/, "").replace(/[-_]+/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+function getPageStorageKey(notebook: Notebook, board: Board) {
+  // Imported PDF pages are documents in their own right. Use the immutable
+  // PDF page number rather than a transient board selection as their scope.
+  return notebook.subtitle.includes("Imported PDF") && board.pageNumber ? `${notebook.id}:pdf-page-${board.pageNumber}` : `${notebook.id}:${board.id}`;
+}
+
 function pointInPolygon(point: Point, polygon: Point[]) {
   let inside = false;
   for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index++) {
@@ -359,13 +365,22 @@ export default function Home() {
 
   useEffect(() => {
     if (!activeNotebook || !activeBoard) return;
-    const pageKey = `${activeNotebook.id}:${activeBoard.id}`;
+    const pageKey = getPageStorageKey(activeNotebook, activeBoard);
     if (pageKeyRef.current === pageKey) return;
     pageKeyRef.current = pageKey;
-    const stored = strokePagesRef.current[pageKey];
+    const legacyKey = `${activeNotebook.id}:${activeBoard.id}`;
+    const stored = strokePagesRef.current[pageKey] ?? strokePagesRef.current[legacyKey];
     const next = stored ?? (activeBoard.id === "bio-cellular-respiration" ? starterStrokes : []);
+    if (stored && pageKey !== legacyKey && !strokePagesRef.current[pageKey]) {
+      strokePagesRef.current[pageKey] = stored;
+      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+    }
     strokesRef.current = next;
     setStrokes(next);
+    // Paint the hydrated page immediately. The editor may already be mounted
+    // when navigation changes only the active board, so waiting for a new
+    // pointer event must never be required to reveal saved handwriting.
+    renderCanvas(next);
     setHistory([]);
     setRedoStack([]);
     setSelectedStrokeIndexes([]);
@@ -866,8 +881,19 @@ export default function Home() {
           drawSegment(finishingStroke, finalPoint);
           finishingStroke.points.push(finalPoint);
         }
-        strokesRef.current = [...strokesRef.current.slice(0, -1), finishingStroke];
-        setStrokes(strokesRef.current);
+      }
+      // Pointer moves mutate the active stroke so the canvas stays smooth,
+      // but React/localStorage only see a new value when the stroke is
+      // committed. Always commit the complete point list on pointer-up—even
+      // when the final pointer position matches the last move event—otherwise
+      // a reload can restore only the stroke's first point.
+      const committedStroke = { ...finishingStroke, points: finishingStroke.points.map((point) => ({ ...point })) };
+      const nextStrokes = [...strokesRef.current.slice(0, -1), committedStroke];
+      strokesRef.current = nextStrokes;
+      setStrokes(nextStrokes);
+      if (pageKeyRef.current) {
+        strokePagesRef.current[pageKeyRef.current] = nextStrokes;
+        writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
       }
     }
     if (tool === "lasso" && lassoPoints.length > 2) {
@@ -1041,7 +1067,8 @@ export default function Home() {
     if (!notebook) return;
     if (!window.confirm("Delete this whiteboard? This can't be undone.")) return;
     setNotebooks((current) => current.map((item) => item.id === notebookId ? { ...item, boards: item.boards.filter((board) => board.id !== boardId), pages: Math.max(0, item.boards.length - 1) } : item));
-    delete strokePagesRef.current[`${notebookId}:${boardId}`];
+    const board = notebook.boards.find((item) => item.id === boardId);
+    if (board) delete strokePagesRef.current[getPageStorageKey(notebook, board)];
     writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
     toast.success("Whiteboard deleted");
   }
@@ -1303,20 +1330,30 @@ export default function Home() {
     }
     try {
       const pdf = await PDFDocument.load(await activePdf.arrayBuffer());
-      const currentPageNumber = activeBoard?.pageNumber ?? 1;
-      const page = pdf.getPage(Math.min(pdf.getPageCount() - 1, Math.max(0, currentPageNumber - 1)));
-      const scaleX = page.getWidth() / CANVAS_WIDTH;
-      const scaleY = page.getHeight() / CANVAS_HEIGHT;
-      strokesRef.current.forEach((stroke) => {
-        const value = stroke.color.replace("#", "");
-        const red = Number.parseInt(value.slice(0, 2), 16) / 255;
-        const green = Number.parseInt(value.slice(2, 4), 16) / 255;
-        const blue = Number.parseInt(value.slice(4, 6), 16) / 255;
-        for (let index = 1; index < stroke.points.length; index += 1) {
-          const from = stroke.points[index - 1];
-          const to = stroke.points[index];
-          page.drawLine({ start: { x: from.x * scaleX, y: page.getHeight() - from.y * scaleY }, end: { x: to.x * scaleX, y: page.getHeight() - to.y * scaleY }, color: rgb(red, green, blue), thickness: Math.max(0.7, stroke.width * scaleX), opacity: stroke.opacity });
-        }
+      // Keep the latest in-memory strokes in the same store used by page
+      // navigation before exporting. This prevents a just-finished stroke
+      // from being omitted by an immediate PDF click.
+      if (activePageKey) strokePagesRef.current[activePageKey] = strokesRef.current;
+
+      const importedNotebook = activeNotebook.subtitle.includes("Imported PDF");
+      const pages = pdf.getPages();
+      pages.forEach((page, pageIndex) => {
+        const board = importedNotebook ? activeNotebook.boards.find((entry) => entry.pageNumber === pageIndex + 1) : pageIndex + 1 === (activeBoard?.pageNumber ?? 1) ? activeBoard : null;
+        if (!board) return;
+        const pageStrokes = strokePagesRef.current[getPageStorageKey(activeNotebook, board)] ?? (board.id === activeBoard?.id ? strokesRef.current : []);
+        const scaleX = page.getWidth() / CANVAS_WIDTH;
+        const scaleY = page.getHeight() / CANVAS_HEIGHT;
+        pageStrokes.forEach((stroke) => {
+          const value = stroke.color.replace("#", "");
+          const red = Number.parseInt(value.slice(0, 2), 16) / 255;
+          const green = Number.parseInt(value.slice(2, 4), 16) / 255;
+          const blue = Number.parseInt(value.slice(4, 6), 16) / 255;
+          for (let index = 1; index < stroke.points.length; index += 1) {
+            const from = stroke.points[index - 1];
+            const to = stroke.points[index];
+            page.drawLine({ start: { x: from.x * scaleX, y: page.getHeight() - from.y * scaleY }, end: { x: to.x * scaleX, y: page.getHeight() - to.y * scaleY }, color: rgb(red, green, blue), thickness: Math.max(0.7, stroke.width * scaleX), opacity: stroke.opacity });
+          }
+        });
       });
       const bytes = await pdf.save();
       const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
@@ -1325,7 +1362,7 @@ export default function Home() {
       anchor.download = `${activeNotebook.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-annotated.pdf`;
       anchor.click();
       URL.revokeObjectURL(url);
-      toast.success("Annotated PDF downloaded", { description: `Original document plus page ${currentPageNumber} handwriting.` });
+      toast.success("Annotated PDF downloaded", { description: importedNotebook ? "Original document plus each page’s handwriting." : "Original document plus this page’s handwriting." });
     } catch {
       toast.error("PDF export failed", { description: "The original document could not be composited." });
     }
@@ -1443,6 +1480,15 @@ export default function Home() {
                       if (attachedPdf) {
                         setAttachedPdfPage(pageNumber);
                         return;
+                      }
+                      // Flush the page being left before changing the active
+                      // board. This keeps each PDF page's annotation set
+                      // independent even when navigation happens immediately
+                      // after writing.
+                      if (activeNotebook && activeBoard) {
+                        const currentKey = getPageStorageKey(activeNotebook, activeBoard);
+                        strokePagesRef.current[currentKey] = strokesRef.current;
+                        writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
                       }
                       const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
                       setActiveBoardId(targetBoard?.id ?? `${notebookId}:pdf-page-${pageNumber}`);
