@@ -345,7 +345,11 @@ export default function Home() {
   const activeNotebook = notebooks.find((notebook) => notebook.id === selectedNotebook) ?? notebooks[0];
   const activeBoardIndex = activeNotebook?.boards.findIndex((board) => board.id === activeBoardId) ?? -1;
   const activeBoard = activeBoardIndex >= 0 ? activeNotebook?.boards[activeBoardIndex] : activeNotebook?.boards[0];
-  const activePageKey = activeNotebook && activeBoard ? `${activeNotebook.id}:${activeBoard.id}` : "";
+  const basePageKey = activeNotebook && activeBoard ? getPageStorageKey(activeNotebook, activeBoard) : "";
+  const attachedPdf = Boolean(activePdf && activeNotebook && !activeNotebook.subtitle.includes("Imported PDF"));
+  // An attached PDF keeps its file on one whiteboard, but each PDF page is a
+  // separate annotation surface and must have a separate persistence key.
+  const activePageKey = attachedPdf ? `${basePageKey}:pdf-page-${attachedPdfPage}` : basePageKey;
   const filteredNotebooks = notebooks.filter((notebook) =>
     `${notebook.title} ${notebook.subtitle} ${notebook.boards.map((board) => board.title).join(" ")}`.toLowerCase().includes(search.toLowerCase()),
   ).sort((a, b) => sortOrder === "name" ? a.title.localeCompare(b.title) : sortOrder === "pages" ? b.boards.length - a.boards.length : 0);
@@ -365,10 +369,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!activeNotebook || !activeBoard) return;
-    const pageKey = getPageStorageKey(activeNotebook, activeBoard);
+    const pageKey = activePageKey;
     if (pageKeyRef.current === pageKey) return;
     pageKeyRef.current = pageKey;
-    const legacyKey = `${activeNotebook.id}:${activeBoard.id}`;
+    const legacyKey = attachedPdf && attachedPdfPage === 1 ? basePageKey : `${activeNotebook.id}:${activeBoard.id}`;
     const stored = strokePagesRef.current[pageKey] ?? strokePagesRef.current[legacyKey];
     const next = stored ?? (activeBoard.id === "bio-cellular-respiration" ? starterStrokes : []);
     if (stored && pageKey !== legacyKey && !strokePagesRef.current[pageKey]) {
@@ -385,7 +389,7 @@ export default function Home() {
     setRedoStack([]);
     setSelectedStrokeIndexes([]);
     setLassoPoints([]);
-  }, [activeNotebook?.id, activeBoard?.id]);
+  }, [activePageKey]);
 
   useEffect(() => {
     if (currentView !== "editor") return;
@@ -1149,7 +1153,6 @@ export default function Home() {
     event.target.value = "";
   }
 
-  const attachedPdf = Boolean(activePdf && activeNotebook && !activeNotebook.subtitle.includes("Imported PDF"));
   const pdfOverlay = activePdf ? <>
     {tool === "text" && <div className="paper-content pointer-events-none absolute inset-0 overflow-hidden px-[8%] py-[8%] text-[#39465d]"><textarea value={pageText[activePageKey] ?? ""} onChange={(event) => updatePageText(event.target.value)} readOnly={tool !== "text"} placeholder="Tap Text to type, or choose Pen to write by hand…" aria-label="Typed notes for this PDF page" className="pointer-events-auto h-[66%] w-full resize-none bg-transparent pt-1 text-[clamp(16px,2vw,24px)] leading-[1.45] text-[#39465d] outline-none placeholder:text-[#b9b0a4]" /></div>}
     <canvas ref={canvasRef} width={CANVAS_WIDTH} height={CANVAS_HEIGHT} className="absolute inset-0 h-full w-full touch-none" style={{ pointerEvents: tool === "text" ? "none" : "auto" }} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishStroke} onPointerCancel={finishStroke} onPointerLeave={(event) => { setEraserCursor(null); if (isDrawing && event.buttons === 0) finishStroke(event); }} aria-label="Handwriting overlay" onContextMenu={(event) => event.preventDefault()} />
@@ -1338,9 +1341,11 @@ export default function Home() {
       const importedNotebook = activeNotebook.subtitle.includes("Imported PDF");
       const pages = pdf.getPages();
       pages.forEach((page, pageIndex) => {
-        const board = importedNotebook ? activeNotebook.boards.find((entry) => entry.pageNumber === pageIndex + 1) : pageIndex + 1 === (activeBoard?.pageNumber ?? 1) ? activeBoard : null;
+        const currentPdfPage = attachedPdf ? attachedPdfPage : activeBoard?.pageNumber ?? 1;
+        const board = importedNotebook ? activeNotebook.boards.find((entry) => entry.pageNumber === pageIndex + 1) : pageIndex + 1 === currentPdfPage ? activeBoard : null;
         if (!board) return;
-        const pageStrokes = strokePagesRef.current[getPageStorageKey(activeNotebook, board)] ?? (board.id === activeBoard?.id ? strokesRef.current : []);
+        const pageKey = attachedPdf ? `${basePageKey}:pdf-page-${pageIndex + 1}` : getPageStorageKey(activeNotebook, board);
+        const pageStrokes = strokePagesRef.current[pageKey] ?? (pageIndex + 1 === currentPdfPage ? strokesRef.current : []);
         const scaleX = page.getWidth() / CANVAS_WIDTH;
         const scaleY = page.getHeight() / CANVAS_HEIGHT;
         pageStrokes.forEach((stroke) => {
@@ -1478,6 +1483,10 @@ export default function Home() {
                       const notebookId = activeNotebook?.id;
                       if (!notebookId) return;
                       if (attachedPdf) {
+                        if (activePageKey) {
+                          strokePagesRef.current[activePageKey] = strokesRef.current;
+                          writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+                        }
                         setAttachedPdfPage(pageNumber);
                         return;
                       }
