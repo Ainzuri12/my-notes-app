@@ -10,13 +10,14 @@ type PdfDocumentViewerProps = {
   pageNumber: number;
   onPageCount: (count: number) => void;
   onPageChange: (page: number) => void;
+  onZoomWheel?: (event: React.WheelEvent<HTMLDivElement>) => void;
   overlay?: ReactNode;
   zoom?: number;
 };
 
 type PdfState = { document: pdfjsLib.PDFDocumentProxy; source: string } | null;
 
-export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange, overlay, zoom = 100 }: PdfDocumentViewerProps) {
+export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange, onZoomWheel, overlay, zoom = 100 }: PdfDocumentViewerProps) {
   const [pdfState, setPdfState] = useState<PdfState>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,7 +117,7 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
   if (!pdfState) return null;
 
   return (
-    <div className="pdf-document-viewer grid min-h-[620px] grid-cols-[76px_minmax(0,1fr)] gap-4 rounded-xl bg-[#fffdf8] p-3 sm:grid-cols-[92px_minmax(0,1fr)] sm:p-5">
+    <div className="pdf-document-viewer grid min-h-[620px] grid-cols-[76px_minmax(0,1fr)] gap-4 rounded-xl bg-[#fffdf8] p-3 sm:grid-cols-[92px_minmax(0,1fr)] sm:p-5" onWheel={onZoomWheel}>
       <div className="space-y-3 overflow-y-auto pr-1" aria-label="PDF page thumbnails">
         {thumbs.map((thumbnail, index) => {
           const page = index + 1;
