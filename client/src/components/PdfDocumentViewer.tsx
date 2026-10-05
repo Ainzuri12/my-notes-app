@@ -42,8 +42,10 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
       if (cancelled || generation !== generationRef.current) return;
       setPdfState({ document, source: file.name });
       setThumbs(Array.from({ length: document.numPages }, () => null));
+      // `pageNumber` is controlled by the parent. Do not force page 1 here:
+      // refreshing the File object while navigating would otherwise jump back
+      // to the first page after the temporary Rendering state.
       onPageCount(document.numPages);
-      onPageChange(1);
       setLoading(false);
     }).catch(() => {
       if (cancelled) return;
@@ -60,7 +62,10 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
     let cancelled = false;
     const safePageNumber = Math.min(document.numPages, Math.max(1, pageNumber));
     document.getPage(safePageNumber).then(async (page) => {
-      if (cancelled || !pageCanvasRef.current) return;
+      if (cancelled || !pageCanvasRef.current) {
+        page.cleanup();
+        return;
+      }
       const viewport = page.getViewport({ scale: 1.4 * Math.max(25, zoom) / 100 });
       const canvas = pageCanvasRef.current;
       canvas.width = viewport.width;
@@ -68,6 +73,8 @@ export function PdfDocumentViewer({ file, pageNumber, onPageCount, onPageChange,
       const renderTask = page.render({ canvas, canvasContext: canvas.getContext("2d")!, viewport });
       renderTaskRef.current = renderTask;
       await renderTask.promise;
+      if (!cancelled && renderTaskRef.current === renderTask) renderTaskRef.current = null;
+      page.cleanup();
     }).catch((renderError: unknown) => {
       if (cancelled || (renderError instanceof Error && renderError.name === "RenderingCancelledException")) return;
       setError("The selected page could not be rendered.");
