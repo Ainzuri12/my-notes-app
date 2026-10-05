@@ -83,6 +83,7 @@ type Folder = { id: string; name: string; color: string; parentId?: string | nul
 const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 20000;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
+const LAST_PAGE_STORAGE_KEY = "paperflow-last-pages";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
 const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
@@ -317,6 +318,7 @@ export default function Home() {
   const [sortOrder, setSortOrder] = useState<"recent" | "name" | "pages">("recent");
   const [importStatus, setImportStatus] = useState<ImportStatus | null>(null);
   const [attachedPdfPage, setAttachedPdfPage] = useState(1);
+  const [lastPages, setLastPages] = useState<Record<string, number>>(() => readStored(LAST_PAGE_STORAGE_KEY, {}));
   const [eraserCursor, setEraserCursor] = useState<Point | null>(null);
   const [boardCreatorOpen, setBoardCreatorOpen] = useState(false);
   const [boardCreatorNotebookId, setBoardCreatorNotebookId] = useState<string | null>(null);
@@ -347,6 +349,7 @@ export default function Home() {
   const activeBoard = activeBoardIndex >= 0 ? activeNotebook?.boards[activeBoardIndex] : activeNotebook?.boards[0];
   const basePageKey = activeNotebook && activeBoard ? getPageStorageKey(activeNotebook, activeBoard) : "";
   const attachedPdf = Boolean(activePdf && activeNotebook && !activeNotebook.subtitle.includes("Imported PDF"));
+  const attachedPdfMemoryKey = attachedPdf ? basePageKey : "";
   // An attached PDF keeps its file on one whiteboard, but each PDF page is a
   // separate annotation surface and must have a separate persistence key.
   const activePageKey = attachedPdf ? `${basePageKey}:pdf-page-${attachedPdfPage}` : basePageKey;
@@ -355,6 +358,12 @@ export default function Home() {
   ).sort((a, b) => sortOrder === "name" ? a.title.localeCompare(b.title) : sortOrder === "pages" ? b.boards.length - a.boards.length : 0);
   const selectedBounds = getStrokeBounds(strokes, selectedStrokeIndexes);
   const activePageImageIds = activePageKey ? (pageImages[activePageKey] ?? []).map((item) => item.id).join(",") : "";
+
+  useEffect(() => {
+    if (!attachedPdfMemoryKey) return;
+    const rememberedPage = lastPages[attachedPdfMemoryKey];
+    if (rememberedPage) setAttachedPdfPage(Math.max(1, rememberedPage));
+  }, [attachedPdfMemoryKey]);
 
   useEffect(() => {
     strokesRef.current = strokes;
@@ -430,6 +439,9 @@ export default function Home() {
   useEffect(() => {
     writeStored("paperflow-page-text", pageText);
   }, [pageText]);
+  useEffect(() => {
+    writeStored(LAST_PAGE_STORAGE_KEY, lastPages);
+  }, [lastPages]);
   useEffect(() => {
     writeStored(IMAGE_PAGE_STORAGE_KEY, imagePageKeys);
   }, [imagePageKeys]);
@@ -1036,6 +1048,10 @@ export default function Home() {
   function openNotebook(notebook: Notebook) {
     setSelectedNotebook(notebook.id);
     setSelectedNotebookIds([]);
+    const rememberedPage = lastPages[notebook.id];
+    const rememberedBoard = rememberedPage ? notebook.boards.find((board) => board.pageNumber === rememberedPage) : undefined;
+    if (rememberedBoard) setActiveBoardId(rememberedBoard.id);
+    else if (notebook.boards[0]) setActiveBoardId(notebook.boards[0].id);
     if (!notebook.subtitle.includes("Imported PDF")) setActivePdf(null);
     if (!notebook.subtitle.includes("Imported image")) setActiveImage(null);
     setCurrentView("notebook");
@@ -1069,7 +1085,21 @@ export default function Home() {
 
   function openWhiteboard(board: Board) {
     setActiveBoardId(board.id);
+    if (activeNotebook?.subtitle.includes("Imported PDF") && board.pageNumber) {
+      setLastPages((current) => ({ ...current, [activeNotebook.id]: board.pageNumber! }));
+    }
     setCurrentView("editor");
+  }
+
+  function hydratePageStrokes(pageKey: string, nextStrokes: Stroke[]) {
+    pageKeyRef.current = pageKey;
+    strokesRef.current = nextStrokes;
+    setStrokes(nextStrokes);
+    setHistory([]);
+    setRedoStack([]);
+    setSelectedStrokeIndexes([]);
+    setLassoPoints([]);
+    renderCanvas(nextStrokes);
   }
 
   function deleteWhiteboard(notebookId: string, boardId: string) {
@@ -1493,6 +1523,10 @@ export default function Home() {
                           strokePagesRef.current[activePageKey] = strokesRef.current;
                           writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
                         }
+                        const nextPageKey = `${basePageKey}:pdf-page-${pageNumber}`;
+                        const nextStrokes = strokePagesRef.current[nextPageKey] ?? (pageNumber === 1 ? strokePagesRef.current[basePageKey] : undefined) ?? [];
+                        hydratePageStrokes(nextPageKey, nextStrokes);
+                        setLastPages((current) => ({ ...current, [basePageKey]: pageNumber }));
                         setAttachedPdfPage(pageNumber);
                         return;
                       }
@@ -1506,6 +1540,10 @@ export default function Home() {
                         writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
                       }
                       const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
+                      const targetPageKey = targetBoard ? getPageStorageKey(activeNotebook, targetBoard) : `${notebookId}:pdf-page-${pageNumber}`;
+                      const nextStrokes = strokePagesRef.current[targetPageKey] ?? [];
+                      hydratePageStrokes(targetPageKey, nextStrokes);
+                      setLastPages((current) => ({ ...current, [notebookId]: pageNumber }));
                       setActiveBoardId(targetBoard?.id ?? `${notebookId}:pdf-page-${pageNumber}`);
                     }} overlay={pdfOverlay} /> : <div className="paper-frame relative mt-14 min-h-[calc(100vh-210px)] w-full max-w-[1100px] origin-top overflow-hidden shadow-[0_18px_34px_rgba(61,51,42,0.18)]" style={{ backgroundColor: activeBoard?.color ?? "#fffdf8", transform: `scale(${zoom / 100})`, marginBottom: `${Math.max(0, (zoom - 100) * 3)}px` }}>
                       {activeImageUrl && <div className={`image-layer absolute z-30 ${tool === "select" ? "cursor-move" : "pointer-events-none"} ${imageSelected ? "image-layer-selected" : ""}`} style={{ left: `${imagePosition.x}%`, top: `${imagePosition.y}%`, width: `${imageScale}%` }} onClick={() => tool === "select" && setImageSelected(true)} onPointerDown={(event) => beginImageInteraction(event, "move")} onPointerMove={moveImageInteraction} onPointerUp={endImageInteraction} onPointerCancel={endImageInteraction}>
