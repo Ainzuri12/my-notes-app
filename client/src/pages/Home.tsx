@@ -341,6 +341,7 @@ export default function Home() {
   const imageDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startLeft: number; startTop: number; startScale: number; paper: HTMLElement; pointerId: number } | null>(null);
   const pageImagesRef = useRef<ImageItem[]>([]);
   const imageLayoutRef = useRef<ImageLayout>({ x: 0, y: 0, scale: 100 });
+  const strokesPageKeyRef = useRef("");
   const pageImageDragRef = useRef<{ id: string; mode: "move" | "resize"; startX: number; startY: number; start: ImageLayout; paper: HTMLElement; pointerId: number } | null>(null);
   const pageImageHoldTimer = useRef<number | null>(null);
 
@@ -367,8 +368,9 @@ export default function Home() {
 
   useEffect(() => {
     strokesRef.current = strokes;
-    if (pageKeyRef.current) {
-      strokePagesRef.current[pageKeyRef.current] = strokes;
+    const strokesPageKey = strokesPageKeyRef.current || pageKeyRef.current;
+    if (strokesPageKey) {
+      strokePagesRef.current[strokesPageKey] = strokes;
       writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
     }
     setSaveState("saving");
@@ -379,8 +381,9 @@ export default function Home() {
   useEffect(() => {
     if (!activeNotebook || !activeBoard) return;
     const pageKey = activePageKey;
-    if (pageKeyRef.current === pageKey) return;
+    if (pageKeyRef.current === pageKey && strokesPageKeyRef.current === pageKey) return;
     pageKeyRef.current = pageKey;
+    strokesPageKeyRef.current = pageKey;
     const legacyKey = attachedPdf && attachedPdfPage === 1 ? basePageKey : `${activeNotebook.id}:${activeBoard.id}`;
     const stored = strokePagesRef.current[pageKey] ?? strokePagesRef.current[legacyKey];
     const next = stored ?? (activeBoard.id === "bio-cellular-respiration" ? starterStrokes : []);
@@ -1093,6 +1096,7 @@ export default function Home() {
 
   function hydratePageStrokes(pageKey: string, nextStrokes: Stroke[]) {
     pageKeyRef.current = pageKey;
+    strokesPageKeyRef.current = pageKey;
     strokesRef.current = nextStrokes;
     setStrokes(nextStrokes);
     setHistory([]);
@@ -1100,6 +1104,21 @@ export default function Home() {
     setSelectedStrokeIndexes([]);
     setLassoPoints([]);
     renderCanvas(nextStrokes);
+  }
+
+  function switchBoard(board: Board) {
+    if (!activeNotebook) return;
+    if (activePageKey) {
+      strokePagesRef.current[activePageKey] = strokesRef.current;
+      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+    }
+    const boardKey = getPageStorageKey(activeNotebook, board);
+    const targetPageKey = attachedPdf ? `${boardKey}:pdf-page-${attachedPdfPage}` : boardKey;
+    hydratePageStrokes(targetPageKey, strokePagesRef.current[targetPageKey] ?? []);
+    if (activeNotebook.subtitle.includes("Imported PDF") && board.pageNumber) {
+      setLastPages((current) => ({ ...current, [activeNotebook.id]: board.pageNumber! }));
+    }
+    setActiveBoardId(board.id);
   }
 
   function deleteWhiteboard(notebookId: string, boardId: string) {
@@ -1568,7 +1587,7 @@ export default function Home() {
                     <div className="flex items-center justify-between border-b border-[#d9d0c3] px-5 py-4"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Writing tools</span><button className="rounded-lg p-1.5 text-[#929089] hover:bg-[#e6dfd5]" onClick={() => showComingSoon("Toolbar settings")} aria-label="Toolbar settings"><Settings2 size={16} /></button></div>
                     <div className="grid grid-cols-3 gap-2 px-5 py-4 lg:grid-cols-2"><EditorTool active={false} icon={<Undo2 size={18} />} label="Undo" onClick={undo} /><EditorTool active={false} icon={<Redo2 size={18} />} label="Redo" onClick={redo} /><EditorTool active={tool === "select"} icon={<Pencil size={18} />} label="Select" onClick={() => setTool("select")} /><EditorTool active={tool === "pen"} icon={<PenLine size={18} />} label="Pen" onClick={() => setTool("pen")} /><EditorTool active={tool === "text"} icon={<FileText size={18} />} label="Text" onClick={() => setTool("text")} /><EditorTool active={tool === "highlight"} icon={<Highlighter size={18} />} label="Highlight" onClick={() => setTool("highlight")} /><EditorTool active={tool === "eraser"} icon={<Eraser size={18} />} label="Eraser" onClick={() => setTool("eraser")} /><EditorTool active={tool === "line"} icon={<Minus size={18} />} label="Line" onClick={() => setTool("line")} /><EditorTool active={tool === "lasso"} icon={<Lasso size={18} />} label="Lasso" onClick={() => setTool("lasso")} /><EditorTool active={false} icon={<FileUp size={18} />} label="Import" onClick={() => fileInputRef.current?.click()} /><label className="editor-quick-color flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-[#d5cbbd] bg-[#fffaf5] text-[#6f6d66]" title="Choose ink color"><Palette size={16} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute h-0 w-0 opacity-0" aria-label="Choose ink color" /></label><label className="editor-quick-size flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[#d5cbbd] bg-[#fffaf5] px-2 text-[10px] font-bold text-[#6f6d66]" title="Adjust brush size"><span>Size</span><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="w-20 cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><output>{penSize}</output></label></div>
                     <div className="space-y-5 px-5 pb-5"><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Ink colour</span><span className="font-mono text-[10px] text-[#aaa59b]">{selectedColor.toUpperCase()}</span></div><div className="flex flex-wrap items-center gap-2"><ColorDot color="#2f456f" active={selectedColor === "#2f456f"} onClick={() => setSelectedColor("#2f456f")} /><ColorDot color="#d66f59" active={selectedColor === "#d66f59"} onClick={() => setSelectedColor("#d66f59")} /><ColorDot color="#6e927e" active={selectedColor === "#6e927e"} onClick={() => setSelectedColor("#6e927e")} /><ColorDot color="#d2a73b" active={selectedColor === "#d2a73b"} onClick={() => setSelectedColor("#d2a73b")} /><ColorDot color="#25282c" active={selectedColor === "#25282c"} onClick={() => setSelectedColor("#25282c")} /><label className="relative flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full border border-dashed border-[#bdb4a9] bg-[#fffaf5] text-[#8e8a81]" title="Choose a custom ink color"><Palette size={13} /><input type="color" value={selectedColor} onChange={(event) => setSelectedColor(event.target.value)} className="absolute inset-0 h-full w-full cursor-pointer opacity-0" aria-label="Choose a custom ink color" /></label></div></div><div><div className="mb-3 flex items-center justify-between text-xs font-semibold text-[#77766f]"><span>Brush size</span><span className="font-mono text-[10px] text-[#aaa59b]">{penSize}px</span></div><input type="range" min="1" max="40" step="1" value={penSize} onChange={(event) => setPenSize(Number(event.target.value))} className="h-2 w-full cursor-pointer accent-[#d66f59]" aria-label="Brush size" /><div className="mt-2 flex items-center justify-between text-[10px] text-[#aaa59b]"><span>1px</span><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#f9f6f0]" aria-hidden="true"><span className="rounded-full bg-[#2f456f]" style={{ width: `${Math.min(18, Math.max(2, penSize))}px`, height: `${Math.min(18, Math.max(2, penSize))}px` }} /></span><span>40px</span></div></div><div className="rounded-xl border border-[#ded4c6] bg-[#faf7f2] p-3"><div className="mb-2 flex items-center gap-2 text-xs font-bold text-[#686861]"><Tablet size={14} className="text-[#c56b58]" /> Tablet ready</div><p className="text-[11px] leading-4 text-[#98958d]">Pressure-aware ink, palm-friendly input, and offline saves work across iPadOS, Android, and desktop.</p></div></div>
-                    <div className="border-t border-[#d9d0c3] p-5"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Whiteboards</span><button onClick={() => openBoardCreator(activeNotebook)} disabled={Boolean(activePdf)} className="rounded-lg p-1.5 text-[#77766f] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Add whiteboard"><Plus size={16} /></button></div><div className="flex items-center gap-2"><button onClick={() => { const board = activeNotebook?.boards[Math.max(0, activeBoardIndex - 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex <= 0} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous whiteboard"><ChevronLeft size={16} /></button><div className="flex-1 truncate rounded-lg border border-[#c9705c] bg-[#fffaf5] px-3 py-2 text-center text-sm font-bold text-[#4d4d48]">{activeBoard?.title ?? "Whiteboard"}</div><button onClick={() => { const board = activeNotebook?.boards[Math.min((activeNotebook.boards.length ?? 1) - 1, activeBoardIndex + 1)]; if (board) setActiveBoardId(board.id); }} disabled={activeBoardIndex < 0 || activeBoardIndex >= (activeNotebook?.boards.length ?? 1) - 1} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Next whiteboard"><ChevronRight size={16} /></button></div></div>
+                    <div className="border-t border-[#d9d0c3] p-5"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[0.18em] text-[#88837a]">Whiteboards</span><button onClick={() => openBoardCreator(activeNotebook)} disabled={Boolean(activePdf)} className="rounded-lg p-1.5 text-[#77766f] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Add whiteboard"><Plus size={16} /></button></div><div className="flex items-center gap-2"><button onClick={() => { const board = activeNotebook?.boards[Math.max(0, activeBoardIndex - 1)]; if (board) switchBoard(board); }} disabled={activeBoardIndex <= 0} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Previous whiteboard"><ChevronLeft size={16} /></button><div className="flex-1 truncate rounded-lg border border-[#c9705c] bg-[#fffaf5] px-3 py-2 text-center text-sm font-bold text-[#4d4d48]">{activeBoard?.title ?? "Whiteboard"}</div><button onClick={() => { const board = activeNotebook?.boards[Math.min((activeNotebook.boards.length ?? 1) - 1, activeBoardIndex + 1)]; if (board) switchBoard(board); }} disabled={activeBoardIndex < 0 || activeBoardIndex >= (activeNotebook?.boards.length ?? 1) - 1} className="rounded-lg p-2 text-[#83817a] hover:bg-[#e6dfd5] disabled:cursor-not-allowed disabled:opacity-30" aria-label="Next whiteboard"><ChevronRight size={16} /></button></div></div>
                   </aside>
                 </div>
               </section>
