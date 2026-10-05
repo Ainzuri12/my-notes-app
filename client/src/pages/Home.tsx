@@ -796,6 +796,9 @@ export default function Home() {
         }
       }
       if (!isInkTool(tool)) return;
+      // Do not create a stroke on finger-down. Wait until movement is
+      // classified as handwriting; vertical movement must remain scrolling.
+      if (tool === "pen" || tool === "highlight" || tool === "line") return;
     }
     if ((event.pointerType === "mouse" && event.button !== 0)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -878,6 +881,21 @@ export default function Home() {
           gesture.mode = "draw";
         }
       }
+      if (gesture?.mode === "draw" && !drawingStrokeRef.current && (tool === "pen" || tool === "highlight" || tool === "line")) {
+        const point = normalizePoint(event);
+        const stroke: Stroke = {
+          points: [point],
+          color: tool === "highlight" ? "#f3b949" : selectedColor,
+          width: tool === "highlight" ? 28 : penSize,
+          opacity: tool === "highlight" ? 0.23 : 0.96,
+        };
+        drawingStrokeRef.current = stroke;
+        setHistory((current) => [...current, strokesRef.current]);
+        setRedoStack([]);
+        strokesRef.current = [...strokesRef.current, stroke];
+        setStrokes(strokesRef.current);
+        setIsDrawing(true);
+      }
       if (touchPanRef.current) {
         event.preventDefault();
         const pan = touchPanRef.current;
@@ -888,7 +906,7 @@ export default function Home() {
         return;
       }
     }
-    if (!isDrawing) return;
+    if (!isDrawing && !drawingStrokeRef.current) return;
     const point = normalizePoint(event);
     if (tool === "lasso") {
       setLassoPoints((current) => [...current, point]);
