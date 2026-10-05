@@ -446,7 +446,7 @@ export default function Home() {
     setImagePosition({ x: layout.x, y: layout.y });
     setImageScale(layout.scale);
     setImageSelected(false);
-    setImageHistory([]);
+
     setImageRedoStack([]);
     setPageImageHistory([]);
     setPageImageRedoStack([]);
@@ -466,8 +466,9 @@ export default function Home() {
     let cancelled = false;
     const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF");
     const isImportedImage = activeNotebook?.subtitle.includes("Imported image");
-    const isImportedNotebook = isImportedPdf || isImportedImage;
-    const pdfStorageKey = isImportedPdf ? activeNotebook?.id : activePageKey ? `pdf:${activePageKey}` : "";
+    const isImportedNotebook = isImportedPdf || isImportedImage;    const pdfStorageKey = isImportedPdf ? activeNotebook?.id : basePageKey ? `pdf:${basePageKey}` : "";
+    
+      
     const imageStorageKey = isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
     if (!pdfStorageKey && !imageStorageKey) {
       setActivePdf(null);
