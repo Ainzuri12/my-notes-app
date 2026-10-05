@@ -722,6 +722,10 @@ export default function Home() {
     context.restore();
   }
 
+  function isInkTool(activeTool: Tool) {
+    return activeTool === "pen" || activeTool === "highlight" || activeTool === "line" || activeTool === "lasso" || activeTool === "eraser";
+  }
+
   function eraseAtPoint(point: Point, previousPoint: Point | null = null) {
     const radius = 42;
     const remaining = strokesRef.current.filter((stroke) => {
@@ -749,15 +753,24 @@ export default function Home() {
         touchPointersRef.current[event.pointerId] = { x: event.clientX, y: event.clientY };
         const pointers = Object.values(touchPointersRef.current);
         if (pointers.length >= 2) {
+          // A second finger changes the gesture from writing to navigation.
+          // Do not leave a half-finished stroke active if it happens mid-mark.
+          drawingStrokeRef.current = null;
+          setIsDrawing(false);
           const [first, second] = pointers;
           const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
           pinchRef.current = { startDistance: distance, startZoom: zoom, startCenterX: (first.x + second.x) / 2, startCenterY: (first.y + second.y) / 2, startScrollLeft: workspace.scrollLeft, startScrollTop: workspace.scrollTop, workspace };
           touchPanRef.current = null;
-        } else {
+          return;
+        } else if (!isInkTool(tool)) {
           touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace };
+        } else {
+          // Single-finger writing is supported; keep the pointer captured so
+          // fast strokes do not lose move/up events at the canvas edge.
+          touchPanRef.current = null;
         }
       }
-      return;
+      if (!isInkTool(tool)) return;
     }
     if ((event.pointerType === "mouse" && event.button !== 0)) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -888,11 +901,17 @@ export default function Home() {
     if (event?.pointerType !== "touch") setEraserCursor(null);
     eraserPointRef.current = null;
     if (event?.pointerType === "touch") {
+      const wasDrawing = Boolean(drawingStrokeRef.current) || (tool === "lasso" && lassoPoints.length > 1) || (tool === "select" && movingRef.current);
+      if (wasDrawing) {
+        // Run the normal commit path before removing the pointer from the
+        // gesture map. This prevents the final touch point from being lost.
+        finishStroke({ ...event, pointerType: "pen" } as React.PointerEvent<HTMLCanvasElement>);
+      }
       delete touchPointersRef.current[event.pointerId];
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       const remaining = Object.values(touchPointersRef.current);
       pinchRef.current = null;
-      touchPanRef.current = remaining.length === 1 ? { lastX: remaining[0].x, lastY: remaining[0].y, workspace: workspaceRef.current! } : null;
+      touchPanRef.current = remaining.length === 1 && !isInkTool(tool) ? { lastX: remaining[0].x, lastY: remaining[0].y, workspace: workspaceRef.current! } : null;
       return;
     }
     if (event && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
