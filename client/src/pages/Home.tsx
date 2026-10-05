@@ -336,6 +336,7 @@ export default function Home() {
   const pageKeyRef = useRef("");
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
   const touchPointersRef = useRef<Record<number, { x: number; y: number }>>({});
+  const touchGestureRef = useRef<Record<number, { startX: number; startY: number; mode: "pending" | "draw" | "pan" }>>({});
   const pinchRef = useRef<{ startDistance: number; startZoom: number; startCenterX: number; startCenterY: number; startScrollLeft: number; startScrollTop: number; workspace: HTMLElement } | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const imageDragRef = useRef<{ mode: "move" | "resize"; startX: number; startY: number; startLeft: number; startTop: number; startScale: number; paper: HTMLElement; pointerId: number } | null>(null);
@@ -751,6 +752,7 @@ export default function Home() {
         event.preventDefault();
         event.currentTarget.setPointerCapture(event.pointerId);
         touchPointersRef.current[event.pointerId] = { x: event.clientX, y: event.clientY };
+        touchGestureRef.current[event.pointerId] = { startX: event.clientX, startY: event.clientY, mode: "pending" };
         const pointers = Object.values(touchPointersRef.current);
         if (pointers.length >= 2) {
           // A second finger changes the gesture from writing to navigation.
@@ -765,8 +767,8 @@ export default function Home() {
         } else if (!isInkTool(tool)) {
           touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace };
         } else {
-          // Single-finger writing is supported; keep the pointer captured so
-          // fast strokes do not lose move/up events at the canvas edge.
+          // Delay single-finger ink until its direction is clear. A vertical
+          // drag is page navigation; a non-vertical movement becomes ink.
           touchPanRef.current = null;
         }
       }
@@ -829,6 +831,29 @@ export default function Home() {
         pinch.workspace.scrollTop = Math.max(0, pinch.startScrollTop - (centerY - pinch.startCenterY));
         setZoom(nextZoom);
         return;
+      }
+      const gesture = touchGestureRef.current[event.pointerId];
+      if (gesture?.mode === "pending" && pointers.length === 1 && isInkTool(tool)) {
+        const dx = event.clientX - gesture.startX;
+        const dy = event.clientY - gesture.startY;
+        if (Math.hypot(dx, dy) < 8) return;
+        if (Math.abs(dy) > Math.abs(dx) * 1.15) {
+          gesture.mode = "pan";
+          if (drawingStrokeRef.current) {
+            const provisional = drawingStrokeRef.current;
+            const lastStroke = strokesRef.current[strokesRef.current.length - 1];
+            if (lastStroke === provisional) {
+              const withoutProvisional = strokesRef.current.slice(0, -1);
+              strokesRef.current = withoutProvisional;
+              setStrokes(withoutProvisional);
+            }
+            drawingStrokeRef.current = null;
+            setIsDrawing(false);
+          }
+          touchPanRef.current = { lastX: event.clientX, lastY: event.clientY, workspace: workspaceRef.current! };
+        } else {
+          gesture.mode = "draw";
+        }
       }
       if (touchPanRef.current) {
         event.preventDefault();
@@ -908,6 +933,7 @@ export default function Home() {
         finishStroke({ ...event, pointerType: "pen" } as React.PointerEvent<HTMLCanvasElement>);
       }
       delete touchPointersRef.current[event.pointerId];
+      delete touchGestureRef.current[event.pointerId];
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       const remaining = Object.values(touchPointersRef.current);
       pinchRef.current = null;
