@@ -464,42 +464,47 @@ export default function Home() {
   }, [displayPreferences]);
   useEffect(() => {
     let cancelled = false;
-    const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF");
-    const isImportedImage = activeNotebook?.subtitle.includes("Imported image");
-    const isImportedNotebook = isImportedPdf || isImportedImage;    const pdfStorageKey = isImportedPdf ? activeNotebook?.id : basePageKey ? `pdf:${basePageKey}` : "";
-    
-      
-    const imageStorageKey = isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
-    if (!pdfStorageKey && !imageStorageKey) {
+    const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF") ?? false;
+    const pdfStorageKey = isImportedPdf ? activeNotebook?.id : basePageKey ? `pdf:${basePageKey}` : "";
+    if (!pdfStorageKey) {
       setActivePdf(null);
-      setActiveImage(null);
       return () => { cancelled = true; };
     }
-    Promise.all([pdfStorageKey ? loadImportedFile(pdfStorageKey) : Promise.resolve(null), imageStorageKey ? loadImportedFile(imageStorageKey) : Promise.resolve(null)]).then(([storedPdf, storedImage]) => {
+    loadImportedFile(pdfStorageKey).then((storedPdf) => {
       if (cancelled) return;
       // IndexedDB can finish saving just after the notebook becomes active.
       // Keep the file selected during that short window instead of replacing it
       // with null and leaving the editor blank.
-      const pdf = storedPdf ?? (pdfStorageKey ? pendingImportedFilesRef.current.get(pdfStorageKey) : null) ?? null;
-      const image = storedImage ?? (imageStorageKey ? pendingImportedFilesRef.current.get(imageStorageKey) : null) ?? null;
-      if (pdf) {
-        setActivePdf(pdf);
-        setActiveImage(null);
-      } else if (isImportedImage || (!isImportedNotebook && Boolean(image))) {
-        setActiveImage(image);
-        setActivePdf(null);
-      } else {
-        setActivePdf(null);
-        setActiveImage(null);
-      }
+      const pdf = storedPdf ?? pendingImportedFilesRef.current.get(pdfStorageKey) ?? null;
+      setActivePdf(pdf);
+      if (pdf) setActiveImage(null);
     }).catch(() => {
-      if (!cancelled) {
-        setActivePdf(null);
-        setActiveImage(null);
-      }
+      if (!cancelled) setActivePdf(null);
     });
     return () => { cancelled = true; };
-  }, [activeNotebook?.id, activeNotebook?.subtitle, activeNotebook?.subtitle.includes("Imported PDF") || activeNotebook?.subtitle.includes("Imported image") ? activeNotebook?.id : activePageKey]);
+  }, [activeNotebook?.id, activeNotebook?.subtitle, activeNotebook?.subtitle.includes("Imported PDF") ? activeNotebook?.id : basePageKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const isImportedPdf = activeNotebook?.subtitle.includes("Imported PDF") ?? false;
+    const isImportedImage = activeNotebook?.subtitle.includes("Imported image") ?? false;
+    const imageStorageKey = isImportedImage ? activeNotebook?.id : activePageKey ? `image:${activePageKey}` : "";
+    if (!imageStorageKey) {
+      setActiveImage(null);
+      return () => { cancelled = true; };
+    }
+    loadImportedFile(imageStorageKey).then((storedImage) => {
+      if (cancelled) return;
+      const image = storedImage ?? pendingImportedFilesRef.current.get(imageStorageKey) ?? null;
+      if (image && !isImportedPdf) {
+        setActiveImage(image);
+        setActivePdf(null);
+      } else if (!isImportedPdf) setActiveImage(null);
+    }).catch(() => {
+      if (!cancelled && !isImportedPdf) setActiveImage(null);
+    });
+    return () => { cancelled = true; };
+  }, [activeNotebook?.id, activeNotebook?.subtitle, activePageKey]);
 
   useEffect(() => {
     if (!activeImage) {
