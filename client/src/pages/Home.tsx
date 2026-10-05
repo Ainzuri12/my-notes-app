@@ -690,8 +690,26 @@ export default function Home() {
       context.lineWidth = stroke.width;
       context.beginPath();
       context.moveTo(stroke.points[0].x, stroke.points[0].y);
-      stroke.points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
-      context.stroke();
+      if (stroke.points.length === 1) {
+        context.arc(stroke.points[0].x, stroke.points[0].y, Math.max(1, stroke.width / 2), 0, Math.PI * 2);
+        context.fillStyle = stroke.color;
+        context.fill();
+      } else if (stroke.points.length === 2) {
+        context.lineTo(stroke.points[1].x, stroke.points[1].y);
+        context.stroke();
+      } else {
+        // Use midpoint quadratic curves so saved strokes are smooth too,
+        // rather than only looking smooth while they are being drawn.
+        for (let index = 1; index < stroke.points.length - 1; index += 1) {
+          const point = stroke.points[index];
+          const next = stroke.points[index + 1];
+          context.quadraticCurveTo(point.x, point.y, (point.x + next.x) / 2, (point.y + next.y) / 2);
+        }
+        const last = stroke.points[stroke.points.length - 1];
+        const previous = stroke.points[stroke.points.length - 2];
+        context.quadraticCurveTo(previous.x, previous.y, last.x, last.y);
+        context.stroke();
+      }
       context.restore();
     });
   }
@@ -711,14 +729,19 @@ export default function Home() {
     const context = canvas?.getContext("2d");
     if (!canvas || !context) return;
     const previous = stroke.points[stroke.points.length - 1];
+    const prior = stroke.points[stroke.points.length - 2] ?? previous;
+    const pressure = Math.min(1, Math.max(0.05, point.p || 0.5));
+    const pressureCurve = Math.pow(pressure, 0.72);
     context.save();
     context.globalAlpha = stroke.opacity;
     context.strokeStyle = stroke.color;
-    context.lineWidth = Math.max(1.5, stroke.width * (0.72 + point.p * 0.42));
+    context.lineWidth = Math.max(1.5, stroke.width * (0.72 + pressureCurve * 0.42));
     context.lineCap = "round";
     context.beginPath();
     context.moveTo(previous.x, previous.y);
-    context.lineTo(point.x, point.y);
+    const controlX = previous.x + (previous.x - prior.x) * 0.12;
+    const controlY = previous.y + (previous.y - prior.y) * 0.12;
+    context.quadraticCurveTo(controlX, controlY, point.x, point.y);
     context.stroke();
     context.restore();
   }
