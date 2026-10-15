@@ -380,6 +380,24 @@ export default function Home() {
   }, [strokes]);
 
   useEffect(() => {
+    // React effects normally persist strokes after state updates, but a page
+    // can be closed or refreshed before a pending render gets a chance to
+    // commit. Use the refs so the latest page is saved synchronously too.
+    const persistActivePage = () => {
+      const pageKey = pageKeyRef.current || strokesPageKeyRef.current;
+      if (!pageKey) return;
+      strokePagesRef.current[pageKey] = strokesRef.current;
+      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+    };
+    window.addEventListener("pagehide", persistActivePage);
+    window.addEventListener("beforeunload", persistActivePage);
+    return () => {
+      window.removeEventListener("pagehide", persistActivePage);
+      window.removeEventListener("beforeunload", persistActivePage);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!activeNotebook || !activeBoard) return;
     const pageKey = activePageKey;
     if (pageKeyRef.current === pageKey && strokesPageKeyRef.current === pageKey) return;
@@ -729,8 +747,13 @@ export default function Home() {
     const context = canvas?.getContext("2d");
     if (!canvas || !context) return;
     const previous = stroke.points[stroke.points.length - 1];
-    const prior = stroke.points[stroke.points.length - 2] ?? previous;
-    const pressure = Math.min(1, Math.max(0.05, point.p || 0.5));
+    const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+    // Coalesced pointer events can contain nearly identical samples. Ignore
+    // sub-pixel movement so it cannot turn into visible brush vibration.
+    if (distance < 0.35) return;
+    const priorPressure = previous.p || 0.5;
+    const nextPressure = point.p || 0.5;
+    const pressure = Math.min(1, Math.max(0.05, (priorPressure + nextPressure) / 2));
     const pressureCurve = Math.pow(pressure, 0.72);
     context.save();
     context.globalAlpha = stroke.opacity;
@@ -739,9 +762,9 @@ export default function Home() {
     context.lineCap = "round";
     context.beginPath();
     context.moveTo(previous.x, previous.y);
-    const controlX = previous.x + (previous.x - prior.x) * 0.12;
-    const controlY = previous.y + (previous.y - prior.y) * 0.12;
-    context.quadraticCurveTo(controlX, controlY, point.x, point.y);
+    // Keep the previous sample as the control point. Unlike extrapolating
+    // backward from the prior sample, this cannot overshoot at sharp turns.
+    context.quadraticCurveTo(previous.x, previous.y, point.x, point.y);
     context.stroke();
     context.restore();
   }
@@ -863,7 +886,12 @@ export default function Home() {
         const dx = event.clientX - gesture.startX;
         const dy = event.clientY - gesture.startY;
         if (Math.hypot(dx, dy) < 8) return;
-        if (Math.abs(dy) > Math.abs(dx) * 1.15) {
+        // A palm/finger used to scroll often has a little sideways drift.
+        // Require clear horizontal/diagonal intent before allowing touch ink;
+        // otherwise keep the gesture in pan mode. Stylus and mouse input are
+        // unaffected because this branch only handles pointerType === touch.
+        const horizontalIntent = Math.abs(dx) >= 12 && Math.abs(dx) >= Math.abs(dy) * 0.8;
+        if (!horizontalIntent) {
           gesture.mode = "pan";
           if (drawingStrokeRef.current) {
             const provisional = drawingStrokeRef.current;
