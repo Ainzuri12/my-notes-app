@@ -84,12 +84,14 @@ const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 20000;
 const STROKE_STORAGE_KEY = "paperflow-stroke-pages";
 const LAST_PAGE_STORAGE_KEY = "paperflow-last-pages";
+const LAST_LOCATION_STORAGE_KEY = "paperflow-last-location";
 const SETTINGS_STORAGE_KEY = "paperflow-settings";
 const IMAGE_PAGE_STORAGE_KEY = "paperflow-image-pages";
 const IMAGE_LAYOUT_STORAGE_KEY = "paperflow-image-layouts";
 const IMAGE_ITEMS_STORAGE_KEY = "paperflow-image-items";
 
 type DrawingSettings = { selectedColor: string; penSize: number; zoom: number };
+type LastLocation = { notebookId: string; boardId: string; view: "library" | "notebook" | "editor" };
 type DisplayPreferences = { theme: "light" | "dark" | "contrast"; largeText: boolean; reducedMotion: boolean; compactToolbar: boolean; leftHanded: boolean };
 type ImportStatus = { name: string; progress: number; message: string; error?: boolean };
 const DISPLAY_PREFS_KEY = "paperflow-display-preferences";
@@ -222,6 +224,12 @@ function getStoredSettings(): DrawingSettings {
     zoom: Math.min(200, Math.max(4, Number(stored.zoom) || 100)),
   };
 }
+function getStoredLastLocation(): LastLocation | null {
+  const stored = readStored<Partial<LastLocation>>(LAST_LOCATION_STORAGE_KEY, {});
+  if (!stored.notebookId || !stored.boardId) return null;
+  const view = stored.view === "editor" || stored.view === "notebook" || stored.view === "library" ? stored.view : "library";
+  return { notebookId: stored.notebookId, boardId: stored.boardId, view };
+}
 function getStoredTrash<T>(key: string): T[] {
   return readStored<T[]>(key, []);
 }
@@ -267,16 +275,17 @@ function getStrokeBounds(strokes: Stroke[], indexes: number[]) {
 }
 
 export default function Home() {
+  const lastLocation = getStoredLastLocation();
   const [notebooks, setNotebooks] = useState<Notebook[]>(getStoredNotebooks);
   const [folders, setFolders] = useState<Folder[]>(getStoredFolders);
   const [trashFolders, setTrashFolders] = useState<Folder[]>(() => getStoredTrash<Folder>("paperflow-trash-folders"));
   const [trashNotebooks, setTrashNotebooks] = useState<Notebook[]>(() => getStoredTrash<Notebook>("paperflow-trash-notebooks"));
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [collapsedFolderIds, setCollapsedFolderIds] = useState<string[]>([]);
-  const [currentView, setCurrentView] = useState<"library" | "notebook" | "editor" | "trash" | "templates">("library");
+  const [currentView, setCurrentView] = useState<"library" | "notebook" | "editor" | "trash" | "templates">(lastLocation?.view ?? "library");
   const [selectedNotebookIds, setSelectedNotebookIds] = useState<string[]>([]);
-  const [selectedNotebook, setSelectedNotebook] = useState("biology");
-  const [activeBoardId, setActiveBoardId] = useState("bio-cellular-respiration");
+  const [selectedNotebook, setSelectedNotebook] = useState(lastLocation?.notebookId ?? "biology");
+  const [activeBoardId, setActiveBoardId] = useState(lastLocation?.boardId ?? "bio-cellular-respiration");
   const [tool, setTool] = useState<Tool>("pen");
   const [selectedColor, setSelectedColor] = useState(() => getStoredSettings().selectedColor);
   const [penSize, setPenSize] = useState(() => getStoredSettings().penSize);
@@ -488,6 +497,14 @@ export default function Home() {
   useEffect(() => {
     writeStored(SETTINGS_STORAGE_KEY, { selectedColor, penSize, zoom } satisfies DrawingSettings);
   }, [selectedColor, penSize, zoom]);
+  useEffect(() => {
+    if (!activeNotebook || !activeBoard) return;
+    writeStored(LAST_LOCATION_STORAGE_KEY, {
+      notebookId: activeNotebook.id,
+      boardId: activeBoard.id,
+      view: currentView === "editor" || currentView === "notebook" ? currentView : "library",
+    } satisfies LastLocation);
+  }, [activeNotebook?.id, activeBoard?.id, currentView]);
   useEffect(() => {
     writeStored(DISPLAY_PREFS_KEY, displayPreferences);
     document.documentElement.dataset.displayTheme = displayPreferences.theme;
