@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PdfDocumentViewer } from "@/components/PdfDocumentViewer";
 import { deleteImportedPdf, loadImportedFile, saveImportedFile } from "@/lib/pdfStore";
+import { loadStoredStrokes, saveStoredStrokes } from "@/lib/strokeStore";
 import { PDFDocument, rgb } from "pdf-lib";
 import {
   BookOpen,
@@ -343,6 +344,7 @@ export default function Home() {
   const eraserPointRef = useRef<Point | null>(null);
   const strokePagesRef = useRef<Record<string, Stroke[]>>(getStoredStrokePages());
   const pageKeyRef = useRef("");
+  const strokeStorageHydratedRef = useRef(false);
   const touchPanRef = useRef<{ lastX: number; lastY: number; workspace: HTMLElement } | null>(null);
   const touchPointersRef = useRef<Record<number, { x: number; y: number }>>({});
   const touchGestureRef = useRef<Record<number, { startX: number; startY: number; mode: "pending" | "draw" | "pan" }>>({});
@@ -370,6 +372,13 @@ export default function Home() {
   const selectedBounds = getStrokeBounds(strokes, selectedStrokeIndexes);
   const activePageImageIds = activePageKey ? (pageImages[activePageKey] ?? []).map((item) => item.id).join(",") : "";
 
+  function persistStrokePage(pageKey: string | null | undefined, nextStrokes: Stroke[]) {
+    if (!pageKey) return;
+    strokePagesRef.current[pageKey] = nextStrokes;
+    writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+    if (strokeStorageHydratedRef.current) void saveStoredStrokes(pageKey, nextStrokes).catch(() => undefined);
+  }
+
   useEffect(() => {
     if (!attachedPdfMemoryKey) return;
     const rememberedPage = lastPages[attachedPdfMemoryKey];
@@ -380,8 +389,7 @@ export default function Home() {
     strokesRef.current = strokes;
     const strokesPageKey = strokesPageKeyRef.current || pageKeyRef.current;
     if (strokesPageKey) {
-      strokePagesRef.current[strokesPageKey] = strokes;
-      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+      persistStrokePage(strokesPageKey, strokes);
     }
     setSaveState("saving");
     const timer = window.setTimeout(() => { setLastSaved("just now"); setSaveState("saved"); }, 450);
@@ -395,8 +403,7 @@ export default function Home() {
     const persistActivePage = () => {
       const pageKey = pageKeyRef.current || strokesPageKeyRef.current;
       if (!pageKey) return;
-      strokePagesRef.current[pageKey] = strokesRef.current;
-      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+      persistStrokePage(pageKey, strokesRef.current);
     };
     window.addEventListener("pagehide", persistActivePage);
     window.addEventListener("beforeunload", persistActivePage);
@@ -404,6 +411,26 @@ export default function Home() {
       window.removeEventListener("pagehide", persistActivePage);
       window.removeEventListener("beforeunload", persistActivePage);
     };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadStoredStrokes().then((stored) => {
+      if (cancelled) return;
+      strokePagesRef.current = { ...strokePagesRef.current, ...stored };
+      strokeStorageHydratedRef.current = true;
+      const pageKey = pageKeyRef.current || activePageKey;
+      const restored = pageKey ? strokePagesRef.current[pageKey] : undefined;
+      if (pageKey && restored) {
+        strokesPageKeyRef.current = pageKey;
+        strokesRef.current = restored;
+        setStrokes(restored);
+        renderCanvas(restored);
+      }
+    }).catch(() => {
+      strokeStorageHydratedRef.current = true;
+    });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
@@ -418,6 +445,7 @@ export default function Home() {
     if (stored && pageKey !== legacyKey && !strokePagesRef.current[pageKey]) {
       strokePagesRef.current[pageKey] = stored;
       writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+      void saveStoredStrokes(pageKey, stored).catch(() => undefined);
     }
     strokesRef.current = next;
     setStrokes(next);
@@ -1048,8 +1076,7 @@ export default function Home() {
       strokesRef.current = nextStrokes;
       setStrokes(nextStrokes);
       if (pageKeyRef.current) {
-        strokePagesRef.current[pageKeyRef.current] = nextStrokes;
-        writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+        persistStrokePage(pageKeyRef.current, nextStrokes);
       }
     }
     if (tool === "lasso" && lassoPoints.length > 2) {
@@ -1240,8 +1267,7 @@ export default function Home() {
   function switchBoard(board: Board) {
     if (!activeNotebook) return;
     if (activePageKey) {
-      strokePagesRef.current[activePageKey] = strokesRef.current;
-      writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+      persistStrokePage(activePageKey, strokesRef.current);
     }
     const boardKey = getPageStorageKey(activeNotebook, board);
     const targetPageKey = attachedPdf ? `${boardKey}:pdf-page-${attachedPdfPage}` : boardKey;
@@ -1670,8 +1696,7 @@ export default function Home() {
                       if (!notebookId) return;
                       if (attachedPdf) {
                         if (activePageKey) {
-                          strokePagesRef.current[activePageKey] = strokesRef.current;
-                          writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+                          persistStrokePage(activePageKey, strokesRef.current);
                         }
                         const nextPageKey = `${basePageKey}:pdf-page-${pageNumber}`;
                         const nextStrokes = strokePagesRef.current[nextPageKey] ?? (pageNumber === 1 ? strokePagesRef.current[basePageKey] : undefined) ?? [];
@@ -1686,8 +1711,7 @@ export default function Home() {
                       // after writing.
                       if (activeNotebook && activeBoard) {
                         const currentKey = getPageStorageKey(activeNotebook, activeBoard);
-                        strokePagesRef.current[currentKey] = strokesRef.current;
-                        writeStored(STROKE_STORAGE_KEY, strokePagesRef.current);
+                        persistStrokePage(currentKey, strokesRef.current);
                       }
                       const targetBoard = activeNotebook.boards.find((board) => board.pageNumber === pageNumber);
                       const targetPageKey = targetBoard ? getPageStorageKey(activeNotebook, targetBoard) : `${notebookId}:pdf-page-${pageNumber}`;
