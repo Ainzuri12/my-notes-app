@@ -10,6 +10,24 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
+function readStoredTheme(defaultTheme: Theme): Theme {
+  try {
+    const stored = window.localStorage.getItem("theme");
+    return stored === "dark" || stored === "light" ? stored : defaultTheme;
+  } catch {
+    // Safari Private Browsing and embedded iPad web views may deny storage access.
+    return defaultTheme;
+  }
+}
+
+function writeStoredTheme(theme: Theme) {
+  try {
+    window.localStorage.setItem("theme", theme);
+  } catch {
+    // Theme persistence is optional; the app should still start without storage.
+  }
+}
+
 interface ThemeProviderProps {
   children: React.ReactNode;
   defaultTheme?: Theme;
@@ -23,8 +41,7 @@ export function ThemeProvider({
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => {
     if (switchable) {
-      const stored = localStorage.getItem("theme");
-      return (stored as Theme) || defaultTheme;
+      return readStoredTheme(defaultTheme);
     }
     return defaultTheme;
   });
@@ -38,7 +55,7 @@ export function ThemeProvider({
     }
 
     if (switchable) {
-      localStorage.setItem("theme", theme);
+      writeStoredTheme(theme);
     }
   }, [theme, switchable]);
 
